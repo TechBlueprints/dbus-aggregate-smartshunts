@@ -30,7 +30,7 @@ When you have multiple batteries in parallel, each with their own SmartShunt, Ve
 - ✅ Aggregates history data (charge cycles, energy throughput, etc.)
 - ✅ Completely stateless - all data derived from physical SmartShunts
 
-### BMS Mode (Optional)
+### BMS Mode (Experimental)
 - ✅ All monitor mode features, PLUS:
 - ✅ Publishes charge control limits (CVL/CCL/DCL) for DVCC
 - ✅ Acts as virtual Battery Management System
