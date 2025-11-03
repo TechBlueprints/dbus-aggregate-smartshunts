@@ -1,12 +1,12 @@
 # dbus-aggregate-smartshunts
 
-A Victron Venus OS service that aggregates multiple SmartShunts into a single virtual smart shunt monitor or virtual BMS.
+A Victron Venus OS service that aggregates multiple SmartShunts into a single virtual SmartShunt monitor.
 
 > **Note:** This project is derived from [dbus-aggregate-batteries](https://github.com/Dr-Gigavolt/dbus-aggregate-batteries) by Anton Labanc PhD and adapted for SmartShunt aggregation.
 
 ## Purpose
 
-When you have multiple batteries in parallel, each with their own SmartShunt, The Cerbo GX makes it difficult to measure them. This service combines them into a single virtual SmartShunt, providing accurate monitoring of your complete battery bank.
+When you have multiple batteries in parallel, each with their own SmartShunt, the Cerbo GX shows them separately. This service combines them into a single virtual SmartShunt, providing unified monitoring of your complete battery bank.
 
 **Key Benefits:**
 - 🎯 **Combined monitoring** - See your entire battery bank as one device
@@ -14,29 +14,38 @@ When you have multiple batteries in parallel, each with their own SmartShunt, Th
 - ⚡ **Reactive updates** - Instant response when any SmartShunt reports changes
 - 🔧 **Zero configuration** - Auto-detects SmartShunts and calculates capacity
 - 🛡️ **Smart protection** - Intelligent voltage and temperature reporting prioritizes battery safety
-- 🎚️ **Optional BMS mode** - Can act as virtual BMS (expermental) to control charging (for "daft" batteries)
+- 🔍 **Full transparency** - Exposes which physical SmartShunts are being aggregated
+- 📊 **Complete history** - Aggregates charge cycles, energy throughput, and all history data
 
 ## Features
 
-### Monitor Mode (Default)
-- ✅ Auto-discovers all SmartShunts on the system
-- ✅ Auto-detects total capacity from SmartShunt configurations
-- ✅ Reactive updates (no polling delay)
-- ✅ Combines current (sum of all shunts)
-- ✅ Smart voltage reporting (prioritizes safety - reports minimum on low voltage alarm, maximum on high voltage alarm)
-- ✅ Smart temperature reporting (prioritizes danger - reports coldest when near freezing, hottest when overheating)
-- ✅ Capacity-weighted SoC calculation
-- ✅ Passes through all alarms from physical shunts
-- ✅ Aggregates history data (charge cycles, energy throughput, etc.)
-- ✅ Completely stateless - all data derived from physical SmartShunts
+- ✅ **Auto-discovers all SmartShunts** on the system
+- ✅ **Auto-detects total capacity** from SmartShunt configurations
+- ✅ **Reactive updates** (no polling delay - updates immediately when any shunt changes)
+- ✅ **Combines current** (sum of all shunts)
+- ✅ **Smart voltage reporting** (prioritizes safety - reports minimum on low voltage alarm, maximum on high voltage alarm, average otherwise)
+- ✅ **Smart temperature reporting** (prioritizes danger - reports coldest when near freezing, hottest when overheating, average otherwise)
+- ✅ **Capacity-weighted SoC** calculation
+- ✅ **Passes through all alarms** from physical shunts
+- ✅ **Aggregates history data** (charge cycles, energy throughput, min/max voltages, etc.)
+- ✅ **Time-to-Go calculation** based on total remaining capacity
+- ✅ **Starter voltage monitoring** aggregation
+- ✅ **VE.Direct error counters** aggregated from all shunts
+- ✅ **Completely stateless** - all data derived from physical SmartShunts
+- ✅ **Exponential backoff** for device discovery (reduces D-Bus traffic)
 
-### BMS Mode (Experimental, optional)
-- ✅ All monitor mode features, PLUS:
-- ✅ Publishes charge control limits (CVL/CCL/DCL) for DVCC
-- ✅ Acts as virtual Battery Management System
-- ✅ Controls Multi/Quattro/MPPT charging through DVCC
-- ✅ Provides `/Io/AllowToCharge` and `/Io/AllowToDischarge` flags
-Note: I'm not running this mode right now, and you shouldn't either
+## Pure Monitoring Only
+
+**This service is PURE MONITORING - it does NOT provide charge control.**
+
+The aggregate SmartShunt:
+- ✅ Reports all SmartShunt data (voltage, current, SoC, temperature, alarms, history)
+- ✅ Appears as a SmartShunt (ProductId 0xA389) in Venus OS
+- ❌ Does NOT publish charge limits (CVL/CCL/DCL)
+- ❌ Does NOT control charging/discharging
+- ❌ Does NOT appear as a BMS
+
+**Need charge control?** Use the companion project [dbus-smartshunt-to-bms](https://github.com/TechBlueprints/dbus-smartshunt-to-bms) which converts SmartShunts into virtual BMS devices with full charge control capabilities.
 
 ## Installation
 

@@ -75,20 +75,16 @@ class DbusAggregateSmartShunts:
         # Create mandatory objects
         self._dbusservice.add_path("/DeviceInstance", 100)
         
-        # ProductId and name depend on device mode
-        # monitor: 0xA389 (SmartShunt), no charge control
-        # virtual-bms: 0xBA77 (BMS), with charge control
-        if config['DEVICE_MODE'] == 'virtual-bms':
-            product_id = 0xBA77  # BMS
-            default_name = "Aggregate BMS"
-        else:
-            product_id = 0xA389  # SmartShunt
-            default_name = "SmartShunt Aggregate"
+        # Always use SmartShunt ProductId (monitor mode only - no charge control)
+        # For BMS functionality, use dbus-smartshunt-to-bms project instead
+        product_id = 0xA389  # SmartShunt
+        default_name = "SmartShunt Aggregate"
         
-        # Use custom name if provided, otherwise use default based on mode
+        # Use custom name if provided, otherwise use default
         device_name = config['DEVICE_NAME'] if config['DEVICE_NAME'] else default_name
         
-        self._dbusservice.add_path("/ProductId", product_id)
+        self._dbusservice.add_path("/ProductId", product_id,
+            gettextcallback=lambda a, x: f"0x{x:X}" if x and isinstance(x, int) else "")
         self._dbusservice.add_path("/ProductName", device_name)
         
         # Mirror firmware version from first physical shunt
@@ -113,41 +109,19 @@ class DbusAggregateSmartShunts:
         # Create capacity paths
         self._dbusservice.add_path("/Soc", None, writeable=True,
                                     gettextcallback=lambda a, x: "{:.1f}%".format(x) if x is not None else "0%")
-        # BMS-specific capacity paths (only in virtual-bms mode)
-        # SmartShunts don't expose these - they only exist in BMS devices
-        if config['DEVICE_MODE'] == 'virtual-bms':
-            self._dbusservice.add_path("/Capacity", None, writeable=True,
-                                        gettextcallback=lambda a, x: "{:.0f}Ah".format(x) if x is not None else "")
-            self._dbusservice.add_path("/InstalledCapacity", None,
-                                        gettextcallback=lambda a, x: "{:.0f}Ah".format(x) if x is not None else "")
+        # Note: /Capacity and /InstalledCapacity are NOT included - these are BMS-specific paths
+        # Physical SmartShunts don't expose these paths
+        # For BMS functionality with these paths, use dbus-smartshunt-to-bms project
         
         self._dbusservice.add_path("/ConsumedAmphours", None,
                                     gettextcallback=lambda a, x: "{:.1f}Ah".format(x) if x is not None else "")
         self._dbusservice.add_path("/TimeToGo", None, writeable=True,
                                     gettextcallback=lambda a, x: "{:.0f}s".format(x) if x is not None and x != [] else "")
         
-        # Create charge control paths (based on device mode)
-        # monitor: Pure SmartShunt - no charge control
-        # virtual-bms: BMS functionality with CVL/CCL/DCL and charge/discharge control
-        self._charge_control_enabled = config['DEVICE_MODE'] == 'virtual-bms'
+        # Pure SmartShunt monitoring only - no charge control paths
+        # For BMS functionality (CVL/CCL/DCL, AllowToCharge/Discharge), use dbus-smartshunt-to-bms project
+        logging.info("Monitor mode only - no charge control (pure SmartShunt aggregation)")
         
-        if self._charge_control_enabled:
-            logging.info(f"Charge control enabled (mode: virtual-bms)")
-            
-            if self.config['MAX_CHARGE_VOLTAGE'] > 0:
-                self._dbusservice.add_path("/Info/MaxChargeVoltage", self.config['MAX_CHARGE_VOLTAGE'],
-                                            gettextcallback=lambda a, x: "{:.2f}V".format(x))
-            if self.config['MAX_CHARGE_CURRENT'] > 0:
-                self._dbusservice.add_path("/Info/MaxChargeCurrent", self.config['MAX_CHARGE_CURRENT'],
-                                            gettextcallback=lambda a, x: "{:.1f}A".format(x))
-            if self.config['MAX_DISCHARGE_CURRENT'] > 0:
-                self._dbusservice.add_path("/Info/MaxDischargeCurrent", self.config['MAX_DISCHARGE_CURRENT'],
-                                            gettextcallback=lambda a, x: "{:.1f}A".format(x))
-            # Charge/discharge enable flags (updated dynamically based on alarms/conditions)
-            self._dbusservice.add_path("/Io/AllowToCharge", 1, writeable=True)
-            self._dbusservice.add_path("/Io/AllowToDischarge", 1, writeable=True)
-        else:
-            logging.info("Monitor mode only - no charge control")
         # Alarms (pass through from physical shunts)
         self._dbusservice.add_path("/Alarms/Alarm", None, writeable=True)
         self._dbusservice.add_path("/Alarms/LowVoltage", None, writeable=True)
@@ -902,9 +876,8 @@ class DbusAggregateSmartShunts:
             bus["/Dc/0/Temperature"] = reported_temperature
             
             bus["/Soc"] = soc
-            # Only publish /Capacity in BMS mode (SmartShunts don't have this path)
-            if self._charge_control_enabled:
-                bus["/Capacity"] = capacity
+            # Note: /Capacity and /InstalledCapacity are NOT published - these are BMS-specific paths
+            # Physical SmartShunts don't have these paths. For BMS functionality, use dbus-smartshunt-to-bms project.
             bus["/ConsumedAmphours"] = consumed_ah
             # TimeToGo: use [] (empty array) when None to match physical SmartShunt behavior
             bus["/TimeToGo"] = time_to_go if time_to_go is not None else []
@@ -942,65 +915,8 @@ class DbusAggregateSmartShunts:
             bus["/VEDirect/TextParseError"] = agg_vedirect_text_parse
             bus["/VEDirect/TextUnfinishedErrors"] = agg_vedirect_text_unfinished
             
-            # Update charge/discharge control flags if charge control is enabled
-            if self._charge_control_enabled:
-                # Determine if charging should be allowed
-                # The batteries have built-in BMSes that handle over-voltage (15V) and under-voltage (10.8V) protection
-                # We only need to provide protection based on SmartShunt alarms and temperature
-                #
-                # Disallow charging if:
-                # - High voltage alarm is active (from SmartShunts)
-                # - High temperature alarm is active (from SmartShunts)
-                # - Temperature exceeds safety threshold
-                allow_charge = 1
-                
-                # SmartShunt alarms
-                if alarm_high_voltage > 0:
-                    allow_charge = 0
-                    logging.warning("Disabling charge: High voltage alarm active")
-                elif alarm_high_temp > 0:
-                    allow_charge = 0
-                    logging.warning("Disabling charge: High temperature alarm active")
-                elif reported_temperature is not None and reported_temperature > self.config['TEMP_HOT_DANGER']:
-                    allow_charge = 0
-                    logging.warning(f"Disabling charge: Temperature {reported_temperature:.1f}°C exceeds hot danger threshold")
-                
-                # Note: DVCC will manage the charge cycle (bulk at 14.6V, then float at 13.8V)
-                # SmartShunts will internally sync to 100% when tail current is met
-                # We only provide emergency protection here, not charge completion detection
-                
-                # Determine if discharging should be allowed
-                # The batteries have built-in BMSes that handle under-voltage (10.8V) protection
-                # We only need to provide protection based on SmartShunt alarms and temperature
-                #
-                # Disallow discharging if:
-                # - Low voltage alarm is active (from SmartShunts)
-                # - Low SoC alarm is active (from SmartShunts)
-                # - Low temperature alarm is active (can damage cells)
-                # - Temperature below safety threshold
-                allow_discharge = 1
-                
-                # SmartShunt alarms
-                if alarm_low_voltage > 0:
-                    allow_discharge = 0
-                    logging.warning("Disabling discharge: Low voltage alarm active")
-                elif alarm_low_soc > 0:
-                    allow_discharge = 0
-                    logging.warning("Disabling discharge: Low SoC alarm active")
-                elif alarm_low_temp > 0:
-                    allow_discharge = 0
-                    logging.warning("Disabling discharge: Low temperature alarm active")
-                elif reported_temperature is not None and reported_temperature < self.config['TEMP_COLD_DANGER']:
-                    allow_discharge = 0
-                    logging.warning(f"Disabling discharge: Temperature {reported_temperature:.1f}°C below cold danger threshold")
-                
-                bus["/Io/AllowToCharge"] = allow_charge
-                bus["/Io/AllowToDischarge"] = allow_discharge
-                
-                # Note: Dynamic CVL adjustment (absorption → float) is handled by the MPPT/charger
-                # The MPPT detects tail current and transitions from absorption to float voltage
-                # The aggregate service only provides emergency protection via AllowToCharge
-
+            # No charge control - this is pure monitoring (SmartShunt behavior)
+            # For BMS functionality (CVL/CCL/DCL, AllowToCharge/Discharge), use dbus-smartshunt-to-bms project
         
         # Reset updating flag
         self._updating = False
@@ -1269,16 +1185,12 @@ def main():
     # Create config dict
     config = {
         'DEVICE_NAME': settings.DEVICE_NAME,
-        'DEVICE_MODE': settings.DEVICE_MODE,
         'EXCLUDE_SHUNTS': settings.EXCLUDE_SHUNTS,
         'TOTAL_CAPACITY': total_capacity,  # Auto-detected
         'FIRMWARE_VERSION': first_shunt_firmware if 'first_shunt_firmware' in locals() and first_shunt_firmware else VERSION,
         'FIRMWARE_VERSION_INT': first_shunt_firmware_int if 'first_shunt_firmware_int' in locals() and first_shunt_firmware_int else None,
         'HARDWARE_VERSION': first_shunt_hardware if 'first_shunt_hardware' in locals() and first_shunt_hardware else VERSION,
         'MIN_CHARGED_VOLTAGE': min_charged_voltage if 'min_charged_voltage' in locals() else None,
-        'MAX_CHARGE_VOLTAGE': settings.MAX_CHARGE_VOLTAGE,
-        'MAX_CHARGE_CURRENT': settings.MAX_CHARGE_CURRENT,
-        'MAX_DISCHARGE_CURRENT': settings.MAX_DISCHARGE_CURRENT,
         'TEMP_COLD_DANGER': settings.TEMP_COLD_DANGER,
         'TEMP_HOT_DANGER': settings.TEMP_HOT_DANGER,
         'UPDATE_INTERVAL_FIND_DEVICES': settings.UPDATE_INTERVAL_FIND_DEVICES,
@@ -1290,19 +1202,10 @@ def main():
     }
     
     logging.info("========== Settings ==========")
-    logging.info(f"|- Device Mode: {config['DEVICE_MODE']}")
+    logging.info(f"|- Mode: Monitor only (pure SmartShunt aggregation)")
     logging.info(f"|- Total Capacity: {config['TOTAL_CAPACITY']}Ah (from SmartShunt configuration)")
-    if config['DEVICE_MODE'] == 'virtual-bms':
-        logging.info(f"|- Charge control: ENABLED")
-        if config['MAX_CHARGE_VOLTAGE'] > 0:
-            logging.info(f"|  - Max Charge Voltage: {config['MAX_CHARGE_VOLTAGE']}V")
-        if config['MAX_CHARGE_CURRENT'] > 0:
-            logging.info(f"|  - Max Charge Current: {config['MAX_CHARGE_CURRENT']}A")
-        if config['MAX_DISCHARGE_CURRENT'] > 0:
-            logging.info(f"|  - Max Discharge Current: {config['MAX_DISCHARGE_CURRENT']}A")
-        logging.info(f"|  - AllowToCharge/Discharge: Dynamic (based on alarms)")
-    else:
-        logging.info(f"|- Charge control: DISABLED (monitor only)")
+    logging.info(f"|- Charge control: DISABLED")
+    logging.info(f"|  For BMS functionality (CVL/CCL/DCL), use dbus-smartshunt-to-bms project")
     
     # Create service
     DbusAggregateSmartShunts(config)

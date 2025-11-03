@@ -134,23 +134,12 @@ EXCLUDE_SHUNTS = get_list_from_config("DEFAULT", "EXCLUDE_SHUNTS")
 # Battery Specifications
 # Capacity is always read from SmartShunt configuration registers (no config needed)
 
-# Device Mode
-DEVICE_MODE = config["DEFAULT"].get("DEVICE_MODE", "monitor").strip().lower()
+# Device Naming
 DEVICE_NAME = config["DEFAULT"].get("DEVICE_NAME", "").strip()
-VALID_MODES = ["monitor", "virtual-bms"]
-if DEVICE_MODE not in VALID_MODES:
-    errors_in_config.append(f"DEVICE_MODE must be one of: {', '.join(VALID_MODES)}. Got: '{DEVICE_MODE}'")
-    DEVICE_MODE = "monitor"  # Fallback to safe default
 
-# Charge/Discharge Limits (only used if mode requires them)
-MAX_CHARGE_VOLTAGE = get_float_from_config("DEFAULT", "MAX_CHARGE_VOLTAGE", 0.0)
-MAX_CHARGE_CURRENT = get_float_from_config("DEFAULT", "MAX_CHARGE_CURRENT", 0.0)
-MAX_DISCHARGE_CURRENT = get_float_from_config("DEFAULT", "MAX_DISCHARGE_CURRENT", 0.0)
-
-# Validate charge control requirements
-if DEVICE_MODE == "virtual-bms":
-    if MAX_CHARGE_VOLTAGE <= 0 and MAX_CHARGE_CURRENT <= 0 and MAX_DISCHARGE_CURRENT <= 0:
-        errors_in_config.append(f"DEVICE_MODE 'virtual-bms' requires at least one of MAX_CHARGE_VOLTAGE, MAX_CHARGE_CURRENT, or MAX_DISCHARGE_CURRENT to be set")
+# Note: BMS functionality (DEVICE_MODE, MAX_CHARGE_VOLTAGE, MAX_CHARGE_CURRENT, MAX_DISCHARGE_CURRENT) 
+# has been removed from this project. This is now pure monitoring only.
+# For BMS functionality, use the dbus-smartshunt-to-bms project instead.
 
 
 # Temperature Monitoring
