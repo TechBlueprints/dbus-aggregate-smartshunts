@@ -1,0 +1,16 @@
+#!/bin/sh
+
+# Service run script for dbus-aggregate-smartshunts
+exec 2>&1
+
+# Set paths
+APP_DIR=/data/apps/dbus-aggregate-smartshunts
+export PYTHONPATH=$APP_DIR/ext:$PYTHONPATH
+
+# Wait for D-Bus to be ready
+sleep 5
+
+# Start the service
+echo "Starting dbus-aggregate-smartshunts..."
+exec python3 $APP_DIR/dbus-aggregate-smartshunts.py
+

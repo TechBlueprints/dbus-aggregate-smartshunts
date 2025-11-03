@@ -1,0 +1,5 @@
+#!/bin/sh
+
+# Log run script
+exec multilog t s99999 n10 /data/apps/dbus-aggregate-smartshunts/service/log
+

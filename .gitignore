@@ -1,0 +1,42 @@
+# User configuration (contains system-specific settings)
+config.ini
+
+# Stored runtime values
+storedvalue_charge
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+.cursorrules
+*.code-workspace
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and runtime files
+*.log
+current
+service/supervise/
+service/log/current
+service/log/@*
+
+# Setup scripts (one-time use)
+setup-git.sh
+
