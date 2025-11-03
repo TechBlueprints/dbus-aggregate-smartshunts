@@ -237,6 +237,8 @@ class DbusAggregateSmartShunts:
         self._dbusservice.add_path("/Devices/0/ServiceName", "com.victronenergy.battery.aggregate_shunts")
         self._dbusservice.add_path("/Devices/0/VregLink", [],
             gettextcallback=lambda a, x: "")
+        # Flag to identify this as a virtual aggregate (so dbus-smartshunt-to-bms can exclude it)
+        self._dbusservice.add_path("/Devices/0/Virtual", 1)
         
         # Create /VEDirect/* paths to aggregate communication errors from all shunts
         self._dbusservice.add_path("/VEDirect/HexChecksumErrors", None)
