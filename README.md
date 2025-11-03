@@ -1,6 +1,6 @@
 # dbus-aggregate-smartshunts
 
-A Victron Venus OS service that aggregates multiple SmartShunts into a single virtual battery monitor or virtual BMS.
+A Victron Venus OS service that aggregates multiple SmartShunts into a single virtual smart shunt monitor or virtual BMS.
 
 > **Note:** This project is derived from [dbus-aggregate-batteries](https://github.com/Dr-Gigavolt/dbus-aggregate-batteries) by Anton Labanc PhD and adapted for SmartShunt aggregation.
 
