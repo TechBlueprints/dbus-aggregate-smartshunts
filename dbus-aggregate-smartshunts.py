@@ -217,9 +217,9 @@ class DbusAggregateSmartShunts:
         logging.info("### Starting D-Bus monitor")
         self._init_dbusmonitor()
         
-        # Set installed capacity in BMS mode (SmartShunts don't expose this path)
-        if self._charge_control_enabled:
-            self._dbusservice["/InstalledCapacity"] = self.config['TOTAL_CAPACITY']
+        # Note: /InstalledCapacity is NOT set - this is a BMS-specific path
+        # Physical SmartShunts don't expose this path
+        # For BMS functionality, use dbus-smartshunt-to-bms project
         
         # Track created device paths for cleanup
         self._device_paths = {}  # {instance: [list of paths]}
