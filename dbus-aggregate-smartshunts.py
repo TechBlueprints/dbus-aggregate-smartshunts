@@ -91,8 +91,11 @@ class DbusAggregateSmartShunts:
         self._dbusservice.add_path("/ProductId", product_id)
         self._dbusservice.add_path("/ProductName", device_name)
         
-        self._dbusservice.add_path("/FirmwareVersion", VERSION)
-        self._dbusservice.add_path("/HardwareVersion", VERSION)
+        # Mirror firmware version from first physical shunt
+        self._dbusservice.add_path("/FirmwareVersion", config.get('FIRMWARE_VERSION', VERSION))
+        # Hardware version: physical SmartShunts don't have one (empty), so we shouldn't either
+        self._dbusservice.add_path("/HardwareVersion", [],
+            gettextcallback=lambda a, x: "")
         self._dbusservice.add_path("/Connected", 1)
         self._dbusservice.add_path("/Serial", "AGGREGATE01")
         self._dbusservice.add_path("/CustomName", device_name)
@@ -110,14 +113,18 @@ class DbusAggregateSmartShunts:
         # Create capacity paths
         self._dbusservice.add_path("/Soc", None, writeable=True,
                                     gettextcallback=lambda a, x: "{:.1f}%".format(x) if x is not None else "0%")
-        self._dbusservice.add_path("/Capacity", None, writeable=True,
-                                    gettextcallback=lambda a, x: "{:.0f}Ah".format(x) if x is not None else "")
-        self._dbusservice.add_path("/InstalledCapacity", self.config['TOTAL_CAPACITY'],
-                                    gettextcallback=lambda a, x: "{:.0f}Ah".format(x) if x is not None else "")
+        # BMS-specific capacity paths (only in virtual-bms mode)
+        # SmartShunts don't expose these - they only exist in BMS devices
+        if config['DEVICE_MODE'] == 'virtual-bms':
+            self._dbusservice.add_path("/Capacity", None, writeable=True,
+                                        gettextcallback=lambda a, x: "{:.0f}Ah".format(x) if x is not None else "")
+            self._dbusservice.add_path("/InstalledCapacity", None,
+                                        gettextcallback=lambda a, x: "{:.0f}Ah".format(x) if x is not None else "")
+        
         self._dbusservice.add_path("/ConsumedAmphours", None,
                                     gettextcallback=lambda a, x: "{:.1f}Ah".format(x) if x is not None else "")
         self._dbusservice.add_path("/TimeToGo", None, writeable=True,
-                                    gettextcallback=lambda a, x: "{:.0f}s".format(x) if x is not None else "")
+                                    gettextcallback=lambda a, x: "{:.0f}s".format(x) if x is not None and x != [] else "")
         
         # Create charge control paths (based on device mode)
         # monitor: Pure SmartShunt - no charge control
@@ -236,6 +243,35 @@ class DbusAggregateSmartShunts:
         logging.info("### Starting D-Bus monitor")
         self._init_dbusmonitor()
         
+        # Set installed capacity in BMS mode (SmartShunts don't expose this path)
+        if self._charge_control_enabled:
+            self._dbusservice["/InstalledCapacity"] = self.config['TOTAL_CAPACITY']
+        
+        # Track created device paths for cleanup
+        self._device_paths = {}  # {instance: [list of paths]}
+        
+        # Create /Devices/0/* paths for the aggregate itself (like physical shunts do)
+        self._dbusservice.add_path("/Devices/0/CustomName", device_name)
+        self._dbusservice.add_path("/Devices/0/DeviceInstance", 100)  # Our device instance
+        # Use firmware version from first detected shunt (integer format)
+        self._dbusservice.add_path("/Devices/0/FirmwareVersion", 
+            config.get('FIRMWARE_VERSION_INT'),
+            gettextcallback=lambda a, x: f"v{(x >> 8) & 0xFF}.{x & 0xFF:x}" if x and isinstance(x, int) else "")
+        self._dbusservice.add_path("/Devices/0/ProductId", product_id,
+            gettextcallback=lambda a, x: f"0x{x:X}" if x and isinstance(x, int) else "")
+        self._dbusservice.add_path("/Devices/0/ProductName", "Virtual SmartShunt Aggregate")
+        self._dbusservice.add_path("/Devices/0/ServiceName", "com.victronenergy.battery.aggregate_shunts")
+        self._dbusservice.add_path("/Devices/0/VregLink", [],
+            gettextcallback=lambda a, x: "")
+        
+        # Create /VEDirect/* paths to aggregate communication errors from all shunts
+        self._dbusservice.add_path("/VEDirect/HexChecksumErrors", None)
+        self._dbusservice.add_path("/VEDirect/HexInvalidCharacterErrors", None)
+        self._dbusservice.add_path("/VEDirect/HexUnfinishedErrors", None)
+        self._dbusservice.add_path("/VEDirect/TextChecksumErrors", None)
+        self._dbusservice.add_path("/VEDirect/TextParseError", None)
+        self._dbusservice.add_path("/VEDirect/TextUnfinishedErrors", None)
+        
         # Register service
         logging.info("### Registering VeDbusService")
         self._dbusservice.register()
@@ -250,9 +286,12 @@ class DbusAggregateSmartShunts:
         monitorlist = {
             "com.victronenergy.battery": {
                 "/ProductName": dummy,
+                "/ProductId": dummy,
                 "/CustomName": dummy,
                 "/Serial": dummy,
                 "/DeviceInstance": dummy,
+                "/FirmwareVersion": dummy,
+                "/HardwareVersion": dummy,
                 "/Dc/0/Voltage": dummy,
                 "/Dc/0/Current": dummy,
                 "/Dc/0/Power": dummy,
@@ -286,6 +325,13 @@ class DbusAggregateSmartShunts:
                 "/History/MaximumStarterVoltage": dummy,
                 # Relay
                 "/Relay/0/State": dummy,
+                # VE.Direct communication error counters
+                "/VEDirect/HexChecksumErrors": dummy,
+                "/VEDirect/HexInvalidCharacterErrors": dummy,
+                "/VEDirect/HexUnfinishedErrors": dummy,
+                "/VEDirect/TextChecksumErrors": dummy,
+                "/VEDirect/TextParseError": dummy,
+                "/VEDirect/TextUnfinishedErrors": dummy,
             }
         }
         
@@ -356,6 +402,9 @@ class DbusAggregateSmartShunts:
                 self._last_device_count = len(found_shunts)
                 logging.info(f"✓ Found {len(found_shunts)} SmartShunt(s) to aggregate")
                 
+                # Update /Devices/* paths to show info about aggregated SmartShunts
+                self._update_device_paths(found_shunts)
+                
                 # Start device stability timer
                 self._devices_stable_since = tt.time()
                 
@@ -411,6 +460,85 @@ class DbusAggregateSmartShunts:
                 return True
         
         return False
+    
+    def _update_device_paths(self, shunts):
+        """
+        Update /Devices/{instance}/* paths to show info about aggregated SmartShunts.
+        Uses device instance as the key so paths are stable (e.g., /Devices/278/*, /Devices/277/*).
+        """
+        # Get current device instances
+        current_instances = set(shunt['instance'] for shunt in shunts)
+        existing_instances = set(self._device_paths.keys())
+        
+        # Remove paths for devices that are no longer present
+        for instance in existing_instances - current_instances:
+            logging.info(f"Removing /Devices/{instance}/* paths (device no longer present)")
+            for path in self._device_paths[instance]:
+                try:
+                    # Note: VeDbusService doesn't have a remove_path method, 
+                    # so we'll just set them to empty/None
+                    self._dbusservice[path] = [] if "VregLink" in path else None
+                except:
+                    pass
+            del self._device_paths[instance]
+        
+        # Add or update paths for current devices
+        for shunt in shunts:
+            instance = shunt['instance']
+            service = shunt['service']
+            
+            # Create paths for this device if not already present
+            if instance not in self._device_paths:
+                logging.info(f"Creating /Devices/{instance}/* paths for {shunt['name']}")
+                
+                base_path = f"/Devices/{instance}"
+                paths = [
+                    f"{base_path}/CustomName",
+                    f"{base_path}/DeviceInstance",
+                    f"{base_path}/FirmwareVersion",
+                    f"{base_path}/ProductId",
+                    f"{base_path}/ProductName",
+                    f"{base_path}/ServiceName",
+                    f"{base_path}/VregLink",
+                ]
+                
+                # Add paths to service with appropriate text formatting
+                self._dbusservice.add_path(f"{base_path}/CustomName", None)
+                self._dbusservice.add_path(f"{base_path}/DeviceInstance", None)
+                # Firmware version: format integer as v{major}.{minor} (hex)
+                self._dbusservice.add_path(f"{base_path}/FirmwareVersion", None,
+                    gettextcallback=lambda a, x: f"v{(x >> 8) & 0xFF}.{x & 0xFF:x}" if x and isinstance(x, int) else "")
+                # Product ID: format as hex
+                self._dbusservice.add_path(f"{base_path}/ProductId", None,
+                    gettextcallback=lambda a, x: f"0x{x:X}" if x and isinstance(x, int) else "")
+                self._dbusservice.add_path(f"{base_path}/ProductName", None)
+                self._dbusservice.add_path(f"{base_path}/ServiceName", None)
+                self._dbusservice.add_path(f"{base_path}/VregLink", [],
+                    gettextcallback=lambda a, x: "")
+                
+                self._device_paths[instance] = paths
+            
+            # Update values from physical shunt
+            base_path = f"/Devices/{instance}"
+            try:
+                fw_version = self._dbusmon.get_value(service, "/FirmwareVersion")
+                product_id = self._dbusmon.get_value(service, "/ProductId")
+                
+                self._dbusservice[f"{base_path}/CustomName"] = self._dbusmon.get_value(service, "/CustomName")
+                self._dbusservice[f"{base_path}/DeviceInstance"] = self._dbusmon.get_value(service, "/DeviceInstance")
+                self._dbusservice[f"{base_path}/FirmwareVersion"] = fw_version
+                self._dbusservice[f"{base_path}/ProductId"] = product_id
+                self._dbusservice[f"{base_path}/ProductName"] = self._dbusmon.get_value(service, "/ProductName")
+                self._dbusservice[f"{base_path}/ServiceName"] = service
+                self._dbusservice[f"{base_path}/VregLink"] = []  # Not applicable for aggregate
+                
+                # Debug: log if we got empty values
+                if not fw_version:
+                    logging.debug(f"FirmwareVersion for {instance} is empty: {fw_version}")
+                if not product_id:
+                    logging.debug(f"ProductId for {instance} is empty: {product_id}")
+            except Exception as e:
+                logging.warning(f"Error updating /Devices/{instance} paths: {e}")
     
     def _update(self):
         """Main update function - aggregate SmartShunt data and update D-Bus"""
@@ -742,6 +870,30 @@ class DbusAggregateSmartShunts:
         agg_min_starter_voltage = min(history_min_starter_voltage) if history_min_starter_voltage else []
         agg_max_starter_voltage = max(history_max_starter_voltage) if history_max_starter_voltage else []
         
+        # Aggregate VE.Direct communication errors (SUM across all shunts)
+        vedirect_hex_checksum = []
+        vedirect_hex_invalid_char = []
+        vedirect_hex_unfinished = []
+        vedirect_text_checksum = []
+        vedirect_text_parse = []
+        vedirect_text_unfinished = []
+        
+        for shunt in self._shunts:
+            service = shunt['service']
+            vedirect_hex_checksum.append(self._dbusmon.get_value(service, "/VEDirect/HexChecksumErrors") or 0)
+            vedirect_hex_invalid_char.append(self._dbusmon.get_value(service, "/VEDirect/HexInvalidCharacterErrors") or 0)
+            vedirect_hex_unfinished.append(self._dbusmon.get_value(service, "/VEDirect/HexUnfinishedErrors") or 0)
+            vedirect_text_checksum.append(self._dbusmon.get_value(service, "/VEDirect/TextChecksumErrors") or 0)
+            vedirect_text_parse.append(self._dbusmon.get_value(service, "/VEDirect/TextParseError") or 0)
+            vedirect_text_unfinished.append(self._dbusmon.get_value(service, "/VEDirect/TextUnfinishedErrors") or 0)
+        
+        agg_vedirect_hex_checksum = sum(vedirect_hex_checksum)
+        agg_vedirect_hex_invalid_char = sum(vedirect_hex_invalid_char)
+        agg_vedirect_hex_unfinished = sum(vedirect_hex_unfinished)
+        agg_vedirect_text_checksum = sum(vedirect_text_checksum)
+        agg_vedirect_text_parse = sum(vedirect_text_parse)
+        agg_vedirect_text_unfinished = sum(vedirect_text_unfinished)
+        
         # Update D-Bus
         with self._dbusservice as bus:
             bus["/Dc/0/Voltage"] = reported_voltage
@@ -750,9 +902,12 @@ class DbusAggregateSmartShunts:
             bus["/Dc/0/Temperature"] = reported_temperature
             
             bus["/Soc"] = soc
-            bus["/Capacity"] = capacity
+            # Only publish /Capacity in BMS mode (SmartShunts don't have this path)
+            if self._charge_control_enabled:
+                bus["/Capacity"] = capacity
             bus["/ConsumedAmphours"] = consumed_ah
-            bus["/TimeToGo"] = time_to_go
+            # TimeToGo: use [] (empty array) when None to match physical SmartShunt behavior
+            bus["/TimeToGo"] = time_to_go if time_to_go is not None else []
             
             bus["/Alarms/Alarm"] = alarm_general
             bus["/Alarms/LowVoltage"] = alarm_low_voltage
@@ -778,6 +933,14 @@ class DbusAggregateSmartShunts:
             bus["/History/DeepestDischarge"] = agg_deepest_discharge
             bus["/History/MinimumStarterVoltage"] = agg_min_starter_voltage
             bus["/History/MaximumStarterVoltage"] = agg_max_starter_voltage
+            
+            # Update VE.Direct communication error counters (aggregated from all shunts)
+            bus["/VEDirect/HexChecksumErrors"] = agg_vedirect_hex_checksum
+            bus["/VEDirect/HexInvalidCharacterErrors"] = agg_vedirect_hex_invalid_char
+            bus["/VEDirect/HexUnfinishedErrors"] = agg_vedirect_hex_unfinished
+            bus["/VEDirect/TextChecksumErrors"] = agg_vedirect_text_checksum
+            bus["/VEDirect/TextParseError"] = agg_vedirect_text_parse
+            bus["/VEDirect/TextUnfinishedErrors"] = agg_vedirect_text_unfinished
             
             # Update charge/discharge control flags if charge control is enabled
             if self._charge_control_enabled:
@@ -885,274 +1048,233 @@ def main():
     from dbus.mainloop.glib import DBusGMainLoop
     DBusGMainLoop(set_as_default=True)
     
-    # Determine total capacity
-    total_capacity = settings.TOTAL_CAPACITY
+    # Auto-detect total capacity from SmartShunt configuration registers
+    logging.info("Reading total capacity from SmartShunt configuration...")
     
-    if total_capacity <= 0:
-        # Auto-detect capacity using configured method
-        logging.info(f"TOTAL_CAPACITY not configured, using '{settings.CAPACITY_MODE}' method for auto-detection...")
+    min_charged_voltage = None  # Will be set when reading config
+    
+    try:
+        # Read from SmartShunt configuration registers (0x1000)
+        from smartshunt_config import SmartShuntConfig
+        import dbus
         
-        min_charged_voltage = None  # Will be set by register method if used
-        
-        if settings.CAPACITY_MODE == "register":
-            # Method 1: Read from SmartShunt configuration registers (0x1000)
-            try:
-                from smartshunt_config import SmartShuntConfig
-                import dbus
-                
-                bus = dbus.SystemBus()
-                # Get list of SmartShunt services (excluding any in EXCLUDE_SHUNTS)
-                shunt_services = []
-                for service_name in bus.list_names():
-                    if service_name.startswith('com.victronenergy.battery.') and service_name not in settings.EXCLUDE_SHUNTS:
-                        # Check if it's a SmartShunt (ProductId 0xA389)
+        bus = dbus.SystemBus()
+        # Get list of SmartShunt services (excluding any in EXCLUDE_SHUNTS)
+        shunt_services = []
+        for service_name in bus.list_names():
+            if service_name.startswith('com.victronenergy.battery.') and service_name not in settings.EXCLUDE_SHUNTS:
+                # Check if it's a SmartShunt (ProductId 0xA389)
+                try:
+                    obj = bus.get_object(service_name, '/ProductId')
+                    iface = dbus.Interface(obj, 'com.victronenergy.BusItem')
+                    product_id = iface.GetValue()
+                    if product_id == 0xA389:  # SmartShunt
+                        # Get product name for logging
                         try:
-                            obj = bus.get_object(service_name, '/ProductId')
-                            iface = dbus.Interface(obj, 'com.victronenergy.BusItem')
-                            product_id = iface.GetValue()
-                            if product_id == 0xA389:  # SmartShunt
-                                # Get product name for logging
-                                try:
-                                    obj = bus.get_object(service_name, '/ProductName')
-                                    product_name = str(obj.Get('com.victronenergy.BusItem', 'Value', dbus_interface='org.freedesktop.DBus.Properties'))
-                                    logging.info(f"|- Found: {product_name}")
-                                except:
-                                    logging.info(f"|- Found: {service_name}")
-                                shunt_services.append(service_name)
+                            obj = bus.get_object(service_name, '/ProductName')
+                            product_name = str(obj.Get('com.victronenergy.BusItem', 'Value', dbus_interface='org.freedesktop.DBus.Properties'))
+                            logging.info(f"|- Found: {product_name}")
                         except:
-                            pass
-                
-                if not shunt_services:
-                    logging.error("No SmartShunts found!")
-                    raise ValueError("No SmartShunts available to aggregate")
-                
-                # Read configuration from all shunts
-                logging.info(f"Reading configuration from {len(shunt_services)} SmartShunt(s)...")
-                
-                configs = []
-                
-                # Read config from all shunts
-                for i, service in enumerate(shunt_services):
-                    logging.info(f"  Reading shunt {i+1}/{len(shunt_services)}: {service}")
-                    config_reader = SmartShuntConfig(service)
-                    if config_reader.read_all(bus):
-                        # Log all settings for this shunt
-                        config_reader.log_all_settings()
-                        
-                        # Note: Monitor mode (Battery Monitor vs DC Energy Meter) is NOT readable via VE.Direct
-                        # We assume all SmartShunts on this system are in Battery Monitor mode
-                        # If you have DC Energy Meters, manually exclude them via EXCLUDE_SHUNTS in config
-                        
-                        configs.append(config_reader)
-                        logging.info(f"    ✓ Added to aggregate")
-                    else:
-                        logging.error(f"    ✗ Failed to read configuration from {service}")
-                
-                if not configs:
-                    logging.error("\nNo SmartShunts available to aggregate!")
-                    logging.error("Please check that SmartShunts are connected and not excluded in config")
-                    raise ValueError("No valid SmartShunts to aggregate")
-                
-                # Calculate total capacity from SmartShunt configuration registers
-                capacities = []
-                for config_reader in configs:
-                    if config_reader.capacity is not None:
-                        capacities.append(config_reader.capacity)
-                        logging.info(f"{config_reader.service_name}: {config_reader.capacity}Ah (from config register 0x1000)")
-                    else:
-                        logging.error(f"{config_reader.service_name}: Could not read capacity from config register!")
-                        raise ValueError("Failed to read capacity from SmartShunt")
-                
-                total_capacity = sum(capacities)
-                if total_capacity > 0:
-                    logging.info(f"✓ Total capacity: {total_capacity}Ah from {len(capacities)} SmartShunt(s)")
-                    logging.info(f"  (read from SmartShunt configuration registers)")
-                else:
-                    logging.error("Failed to read capacity from any SmartShunt!")
-                    raise ValueError("No capacity information available")
-                
-                # Validate SmartShunt configuration
-                logging.info(f"SmartShunt configuration (validating {len(configs)} shunt(s)):")
-                
-                # Check consistency across all shunts
-                # CRITICAL: These settings MUST match for accurate aggregation
-                critical_settings = [
-                    ('charged_voltage', 'Charged voltage', 'V', 2),
-                ]
-                
-                # RECOMMENDED: These should match for best accuracy, but not critical
-                recommended_settings = [
-                    ('tail_current', 'Tail current', '%', 1),
-                    ('charge_efficiency', 'Charge efficiency', '%', 0),
-                    ('peukert_exponent', 'Peukert exponent', '', 2),
-                    ('current_threshold', 'Current threshold', 'A', 2),
-                    ('discharge_floor', 'Discharge floor', '%', 0),
-                ]
-                
-                # Check CRITICAL settings first
-                logging.info("\n  === CRITICAL Settings (must match) ===")
-                
-                for attr, name, unit, decimals in critical_settings:
-                    values = [getattr(c, attr) for c in configs if getattr(c, attr) is not None]
-                    
-                    if values:
-                        min_val = min(values)
-                        max_val = max(values)
-                        avg_val = sum(values) / len(values)
-                        
-                        # Store minimum charged voltage for charge control
-                        if attr == 'charged_voltage' and min_val is not None:
-                            min_charged_voltage = min_val
-                        
-                        # Check if all values are the same (within tolerance for floats)
-                        tolerance = 0.01 if decimals > 0 else 0.5
-                        all_same = (max_val - min_val) <= tolerance
-                        
-                        if all_same:
-                            if decimals > 0:
-                                logging.info(f"  ✓ {name}: {avg_val:.{decimals}f}{unit} (consistent)")
-                            else:
-                                logging.info(f"  ✓ {name}: {int(avg_val)}{unit} (consistent)")
-                        else:
-                            # CRITICAL MISMATCH - use minimum for safety
-                            if decimals > 0:
-                                logging.warning(f"  ⚠️  {name}: MISMATCH! Range: {min_val:.{decimals}f}{unit} to {max_val:.{decimals}f}{unit}")
-                            else:
-                                logging.warning(f"  ⚠️  {name}: MISMATCH! Range: {int(min_val)}{unit} to {int(max_val)}{unit}")
-                            logging.warning(f"     All SmartShunts should have the same {name.lower()}!")
-                            for i, c in enumerate(configs):
-                                val = getattr(c, attr)
-                                if val is not None:
-                                    if decimals > 0:
-                                        logging.warning(f"     Shunt {i+1}: {val:.{decimals}f}{unit}")
-                                    else:
-                                        logging.warning(f"     Shunt {i+1}: {int(val)}{unit}")
-                            
-                            # Use the MINIMUM (most conservative) value for safety
-                            if decimals > 0:
-                                logging.warning(f"  → Using MINIMUM value: {min_val:.{decimals}f}{unit} (prevents overcharge)")
-                            else:
-                                logging.warning(f"  → Using MINIMUM value: {int(min_val)}{unit} (prevents overcharge)")
-                            logging.warning(f"     SAFETY: This ensures no battery gets overcharged")
-                
-                # Check RECOMMENDED settings
-                logging.info("\n  === Recommended Settings (should match for best accuracy) ===")
-                for attr, name, unit, decimals in recommended_settings:
-                    values = [getattr(c, attr) for c in configs if getattr(c, attr) is not None]
-                    
-                    if values:
-                        min_val = min(values)
-                        max_val = max(values)
-                        avg_val = sum(values) / len(values)
-                        
-                        # Check if all values are the same (within tolerance for floats)
-                        tolerance = 0.01 if decimals > 0 else 0.5
-                        all_same = (max_val - min_val) <= tolerance
-                        
-                        if all_same:
-                            if decimals > 0:
-                                logging.info(f"  ✓ {name}: {avg_val:.{decimals}f}{unit} (consistent)")
-                            else:
-                                logging.info(f"  ✓ {name}: {int(avg_val)}{unit} (consistent)")
-                        else:
-                            # Recommended mismatch - log as INFO/WARNING but not critical
-                            if decimals > 0:
-                                logging.info(f"  ℹ {name}: Varies - Range: {min_val:.{decimals}f}{unit} to {max_val:.{decimals}f}{unit}")
-                            else:
-                                logging.info(f"  ℹ {name}: Varies - Range: {int(min_val)}{unit} to {int(max_val)}{unit}")
-                            logging.info(f"     (Not critical, but matching values recommended for best accuracy)")
-                
-                logging.info("  Note: These are SmartShunt settings (for SoC calculation/sync)")
-                logging.info("  Note: Battery protection limits (CVL/CCL/DCL) are separate config settings")
-                
-            except Exception as e:
-                logging.error(f"Error reading from SmartShunt registers: {e}")
-                import traceback
-                logging.error(traceback.format_exc())
-                logging.warning("Falling back to SoC calculation method...")
-                total_capacity = 0  # Will trigger soc method below
+                            logging.info(f"|- Found: {service_name}")
+                        shunt_services.append(service_name)
+                except:
+                    pass
         
-        if settings.CAPACITY_MODE == "soc" or (settings.CAPACITY_MODE == "register" and total_capacity <= 0):
-            # Method 2: Calculate from SoC and ConsumedAmphours (fallback or explicitly configured)
-            if total_capacity <= 0 and settings.CAPACITY_MODE == "register":
-                logging.info("Register method failed, using SoC calculation as fallback...")
+        if not shunt_services:
+            logging.error("No SmartShunts found!")
+            raise ValueError("No SmartShunts available to aggregate")
+        
+        # Read firmware/hardware version from first shunt to mirror it
+        first_shunt_firmware = None
+        first_shunt_firmware_int = None
+        first_shunt_hardware = None
+        try:
+            obj = bus.get_object(shunt_services[0], '/FirmwareVersion')
+            iface = dbus.Interface(obj, 'com.victronenergy.BusItem')
+            fw_value = iface.GetValue()
+            # Store the raw integer value for /Devices/0/FirmwareVersion
+            first_shunt_firmware_int = fw_value
+            # Convert to text format if it's an integer (e.g., 1049 decimal = 0x419 hex = v4.19)
+            if isinstance(fw_value, (int, dbus.Int32)):
+                # Victron format: 0xMMNN where MM is major (hex), NN is minor (hex)
+                major = (fw_value >> 8) & 0xFF  # High byte
+                minor = fw_value & 0xFF  # Low byte
+                first_shunt_firmware = f"v{major}.{minor:x}"  # Format minor as hex without 0x prefix
+            else:
+                first_shunt_firmware = str(fw_value)
+            logging.info(f"|- First shunt firmware: {first_shunt_firmware} (from value: {fw_value})")
+        except Exception as e:
+            logging.warning(f"|- Could not read firmware version: {e}")
+        
+        try:
+            obj = bus.get_object(shunt_services[0], '/HardwareVersion')
+            iface = dbus.Interface(obj, 'com.victronenergy.BusItem')
+            hw_value = iface.GetValue()
+            if hw_value and hw_value != []:
+                first_shunt_hardware = str(hw_value)
+                logging.info(f"|- First shunt hardware: {first_shunt_hardware}")
+        except Exception as e:
+            logging.debug(f"|- Hardware version not available: {e}")
+        
+        # Read configuration from all shunts
+        logging.info(f"Reading configuration from {len(shunt_services)} SmartShunt(s)...")
+        
+        configs = []
+        
+        # Read config from all shunts
+        for i, service in enumerate(shunt_services):
+            logging.info(f"  Reading shunt {i+1}/{len(shunt_services)}: {service}")
+            config_reader = SmartShuntConfig(service)
+            if config_reader.read_all(bus):
+                # Log all settings for this shunt
+                config_reader.log_all_settings()
+                
+                # Note: Monitor mode (Battery Monitor vs DC Energy Meter) is NOT readable via VE.Direct
+                # We assume all SmartShunts on this system are in Battery Monitor mode
+                # If you have DC Energy Meters, manually exclude them via EXCLUDE_SHUNTS in config
+                
+                configs.append(config_reader)
+                logging.info(f"    ✓ Added to aggregate")
+            else:
+                logging.error(f"    ✗ Failed to read configuration from {service}")
+        
+        if not configs:
+            logging.error("\nNo SmartShunts available to aggregate!")
+            logging.error("Please check that SmartShunts are connected and not excluded in config")
+            raise ValueError("No valid SmartShunts to aggregate")
+        
+        # Calculate total capacity from SmartShunt configuration registers
+        capacities = []
+        for config_reader in configs:
+            if config_reader.capacity is not None:
+                capacities.append(config_reader.capacity)
+                logging.info(f"{config_reader.service_name}: {config_reader.capacity}Ah (from config register 0x1000)")
+            else:
+                logging.error(f"{config_reader.service_name}: Could not read capacity from config register!")
+                raise ValueError("Failed to read capacity from SmartShunt")
+        
+        total_capacity = sum(capacities)
+        if total_capacity > 0:
+            logging.info(f"✓ Total capacity: {total_capacity}Ah from {len(capacities)} SmartShunt(s)")
+            logging.info(f"  (read from SmartShunt configuration registers)")
+        else:
+            logging.error("Failed to read capacity from any SmartShunt!")
+            raise ValueError("No capacity information available")
+        
+        # Validate SmartShunt configuration
+        logging.info(f"SmartShunt configuration (validating {len(configs)} shunt(s)):")
+        
+        # Check consistency across all shunts
+        # CRITICAL: These settings MUST match for accurate aggregation
+        critical_settings = [
+            ('charged_voltage', 'Charged voltage', 'V', 2),
+        ]
+        
+        # RECOMMENDED: These should match for best accuracy, but not critical
+        recommended_settings = [
+            ('tail_current', 'Tail current', '%', 1),
+            ('charge_efficiency', 'Charge efficiency', '%', 0),
+            ('peukert_exponent', 'Peukert exponent', '', 2),
+            ('current_threshold', 'Current threshold', 'A', 2),
+            ('discharge_floor', 'Discharge floor', '%', 0),
+        ]
+        
+        # Check CRITICAL settings first
+        logging.info("\n  === CRITICAL Settings (must match) ===")
+        
+        for attr, name, unit, decimals in critical_settings:
+            values = [getattr(c, attr) for c in configs if getattr(c, attr) is not None]
             
-            try:
-                import dbus
-                bus = dbus.SystemBus()
+            if values:
+                min_val = min(values)
+                max_val = max(values)
+                avg_val = sum(values) / len(values)
                 
-                # Find all SmartShunts on the system
-                shunt_data = []
-                for service_name in bus.list_names():
-                    if service_name.startswith('com.victronenergy.battery.') and service_name not in settings.EXCLUDE_SHUNTS:
-                        try:
-                            obj = bus.get_object(service_name, '/ProductId')
-                            iface = dbus.Interface(obj, 'com.victronenergy.BusItem')
-                            product_id = iface.GetValue()
-                            if product_id == 0xA389:  # SmartShunt
-                                # Get SoC and ConsumedAmphours
-                                try:
-                                    soc_obj = bus.get_object(service_name, '/Soc')
-                                    soc = float(soc_obj.Get('com.victronenergy.BusItem', 'Value', dbus_interface='org.freedesktop.DBus.Properties'))
-                                    
-                                    consumed_obj = bus.get_object(service_name, '/ConsumedAmphours')
-                                    consumed_ah = float(consumed_obj.Get('com.victronenergy.BusItem', 'Value', dbus_interface='org.freedesktop.DBus.Properties'))
-                                    
-                                    shunt_data.append({
-                                        'service': service_name,
-                                        'soc': soc,
-                                        'consumed_ah': abs(consumed_ah)
-                                    })
-                                except:
-                                    pass
-                        except:
-                            pass
+                # Store minimum charged voltage for charge control
+                if attr == 'charged_voltage' and min_val is not None:
+                    min_charged_voltage = min_val
                 
-                if shunt_data:
-                    # Calculate capacity from each shunt
-                    capacities = []
-                    for data in shunt_data:
-                        soc = data['soc']
-                        consumed_ah = data['consumed_ah']
-                        
-                        # Only use SoC between 10-90% for better accuracy
-                        if 10 <= soc <= 90:
-                            # consumed_ah is how much has been taken out
-                            # If SoC is 70%, then we've used 30% = consumed_ah
-                            # So total capacity = consumed_ah / (percent_used / 100)
-                            percent_used = 100 - soc
-                            if percent_used > 0:
-                                capacity = consumed_ah / (percent_used / 100.0)
-                                capacities.append(capacity)
-                                logging.info(f"{data['service']}: {capacity:.1f}Ah (calculated from SoC {soc}% and {consumed_ah:.1f}Ah consumed)")
-                    
-                    if capacities:
-                        total_capacity = sum(capacities)
-                        logging.info(f"✓ Total capacity: {total_capacity:.1f}Ah from {len(capacities)} SmartShunt(s)")
-                        logging.info(f"  (calculated from SoC and ConsumedAmphours)")
+                # Check if all values are the same (within tolerance for floats)
+                tolerance = 0.01 if decimals > 0 else 0.5
+                all_same = (max_val - min_val) <= tolerance
+                
+                if all_same:
+                    if decimals > 0:
+                        logging.info(f"  ✓ {name}: {avg_val:.{decimals}f}{unit} (consistent)")
                     else:
-                        logging.warning("SoC outside 10-90% range for all shunts, using fallback 600Ah")
-                        total_capacity = 600
+                        logging.info(f"  ✓ {name}: {int(avg_val)}{unit} (consistent)")
                 else:
-                    logging.warning("No SmartShunts found, using fallback 600Ah")
-                    total_capacity = 600
+                    # CRITICAL MISMATCH - use minimum for safety
+                    if decimals > 0:
+                        logging.warning(f"  ⚠️  {name}: MISMATCH! Range: {min_val:.{decimals}f}{unit} to {max_val:.{decimals}f}{unit}")
+                    else:
+                        logging.warning(f"  ⚠️  {name}: MISMATCH! Range: {int(min_val)}{unit} to {int(max_val)}{unit}")
+                    logging.warning(f"     All SmartShunts should have the same {name.lower()}!")
+                    for i, c in enumerate(configs):
+                        val = getattr(c, attr)
+                        if val is not None:
+                            if decimals > 0:
+                                logging.warning(f"     Shunt {i+1}: {val:.{decimals}f}{unit}")
+                            else:
+                                logging.warning(f"     Shunt {i+1}: {int(val)}{unit}")
                     
-            except Exception as e:
-                logging.error(f"Error calculating capacity from SoC: {e}")
-                import traceback
-                logging.error(traceback.format_exc())
-                total_capacity = 600
-                logging.warning(f"Using fallback capacity: {total_capacity}Ah")
-    
-    else:
-        logging.info(f"Using manually configured capacity: {total_capacity}Ah")
+                    # Use the MINIMUM (most conservative) value for safety
+                    if decimals > 0:
+                        logging.warning(f"  → Using MINIMUM value: {min_val:.{decimals}f}{unit} (prevents overcharge)")
+                    else:
+                        logging.warning(f"  → Using MINIMUM value: {int(min_val)}{unit} (prevents overcharge)")
+                    logging.warning(f"     SAFETY: This ensures no battery gets overcharged")
+        
+        # Check RECOMMENDED settings
+        logging.info("\n  === Recommended Settings (should match for best accuracy) ===")
+        for attr, name, unit, decimals in recommended_settings:
+            values = [getattr(c, attr) for c in configs if getattr(c, attr) is not None]
+            
+            if values:
+                min_val = min(values)
+                max_val = max(values)
+                avg_val = sum(values) / len(values)
+                
+                # Check if all values are the same (within tolerance for floats)
+                tolerance = 0.01 if decimals > 0 else 0.5
+                all_same = (max_val - min_val) <= tolerance
+                
+                if all_same:
+                    if decimals > 0:
+                        logging.info(f"  ✓ {name}: {avg_val:.{decimals}f}{unit} (consistent)")
+                    else:
+                        logging.info(f"  ✓ {name}: {int(avg_val)}{unit} (consistent)")
+                else:
+                    # Recommended mismatch - log as INFO/WARNING but not critical
+                    if decimals > 0:
+                        logging.info(f"  ℹ {name}: Varies - Range: {min_val:.{decimals}f}{unit} to {max_val:.{decimals}f}{unit}")
+                    else:
+                        logging.info(f"  ℹ {name}: Varies - Range: {int(min_val)}{unit} to {int(max_val)}{unit}")
+                    logging.info(f"     (Not critical, but matching values recommended for best accuracy)")
+        
+        logging.info("  Note: These are SmartShunt settings (for SoC calculation/sync)")
+        logging.info("  Note: Battery protection limits (CVL/CCL/DCL) are separate config settings")
+                
+    except Exception as e:
+        logging.error(f"Error reading from SmartShunt registers: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        logging.error("\nFailed to read capacity from SmartShunt configuration!")
+        logging.error("Please ensure:")
+        logging.error("  1. SmartShunts are connected and powered on")
+        logging.error("  2. Capacity is configured in VictronConnect for each SmartShunt")
+        logging.error("  3. SmartShunts are not in the EXCLUDE_SHUNTS list")
+        sys.exit(1)
     
     # Create config dict
     config = {
         'DEVICE_NAME': settings.DEVICE_NAME,
         'DEVICE_MODE': settings.DEVICE_MODE,
         'EXCLUDE_SHUNTS': settings.EXCLUDE_SHUNTS,
-        'TOTAL_CAPACITY': total_capacity,
+        'TOTAL_CAPACITY': total_capacity,  # Auto-detected
+        'FIRMWARE_VERSION': first_shunt_firmware if 'first_shunt_firmware' in locals() and first_shunt_firmware else VERSION,
+        'FIRMWARE_VERSION_INT': first_shunt_firmware_int if 'first_shunt_firmware_int' in locals() and first_shunt_firmware_int else None,
+        'HARDWARE_VERSION': first_shunt_hardware if 'first_shunt_hardware' in locals() and first_shunt_hardware else VERSION,
         'MIN_CHARGED_VOLTAGE': min_charged_voltage if 'min_charged_voltage' in locals() else None,
         'MAX_CHARGE_VOLTAGE': settings.MAX_CHARGE_VOLTAGE,
         'MAX_CHARGE_CURRENT': settings.MAX_CHARGE_CURRENT,
@@ -1169,7 +1291,7 @@ def main():
     
     logging.info("========== Settings ==========")
     logging.info(f"|- Device Mode: {config['DEVICE_MODE']}")
-    logging.info(f"|- Total Capacity: {config['TOTAL_CAPACITY']}Ah")
+    logging.info(f"|- Total Capacity: {config['TOTAL_CAPACITY']}Ah (from SmartShunt configuration)")
     if config['DEVICE_MODE'] == 'virtual-bms':
         logging.info(f"|- Charge control: ENABLED")
         if config['MAX_CHARGE_VOLTAGE'] > 0:

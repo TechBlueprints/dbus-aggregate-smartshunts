@@ -132,17 +132,7 @@ if not DEVICE_NAME:
 EXCLUDE_SHUNTS = get_list_from_config("DEFAULT", "EXCLUDE_SHUNTS")
 
 # Battery Specifications
-TOTAL_CAPACITY = get_float_from_config("DEFAULT", "TOTAL_CAPACITY", -1.0)
-# Empty or -1 means auto-detection, 0 is invalid, > 0 for manual specification
-if TOTAL_CAPACITY == 0:
-    errors_in_config.append(f"TOTAL_CAPACITY cannot be 0. Leave empty for auto-detection or specify capacity in Ah.")
-
-# Capacity detection mode ('register' or 'soc')
-CAPACITY_MODE = config["DEFAULT"].get("CAPACITY_MODE", "register").strip().lower()
-VALID_CAPACITY_MODES = ["register", "soc"]
-if CAPACITY_MODE not in VALID_CAPACITY_MODES:
-    errors_in_config.append(f"CAPACITY_MODE must be one of: {', '.join(VALID_CAPACITY_MODES)}. Got: '{CAPACITY_MODE}'")
-    CAPACITY_MODE = "register"  # Fallback to safe default
+# Capacity is always read from SmartShunt configuration registers (no config needed)
 
 # Device Mode
 DEVICE_MODE = config["DEFAULT"].get("DEVICE_MODE", "monitor").strip().lower()

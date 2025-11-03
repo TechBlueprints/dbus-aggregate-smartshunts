@@ -6,7 +6,7 @@ A Victron Venus OS service that aggregates multiple SmartShunts into a single vi
 
 ## Purpose
 
-When you have multiple batteries in parallel, each with their own SmartShunt, Venus OS treats them as separate batteries. This service combines them into a single virtual device, providing accurate monitoring of your complete battery bank.
+When you have multiple batteries in parallel, each with their own SmartShunt, The Cerbo GX makes it difficult to measure them. This service combines them into a single virtual SmartShunt, providing accurate monitoring of your complete battery bank.
 
 **Key Benefits:**
 - 🎯 **Combined monitoring** - See your entire battery bank as one device
@@ -14,7 +14,7 @@ When you have multiple batteries in parallel, each with their own SmartShunt, Ve
 - ⚡ **Reactive updates** - Instant response when any SmartShunt reports changes
 - 🔧 **Zero configuration** - Auto-detects SmartShunts and calculates capacity
 - 🛡️ **Smart protection** - Intelligent voltage and temperature reporting prioritizes battery safety
-- 🎚️ **Optional BMS mode** - Can act as virtual BMS to control charging (for "dumb" batteries)
+- 🎚️ **Optional BMS mode** - Can act as virtual BMS (expermental) to control charging (for "daft" batteries)
 
 ## Features
 
@@ -30,12 +30,13 @@ When you have multiple batteries in parallel, each with their own SmartShunt, Ve
 - ✅ Aggregates history data (charge cycles, energy throughput, etc.)
 - ✅ Completely stateless - all data derived from physical SmartShunts
 
-### BMS Mode (Experimental)
+### BMS Mode (Experimental, optional)
 - ✅ All monitor mode features, PLUS:
 - ✅ Publishes charge control limits (CVL/CCL/DCL) for DVCC
 - ✅ Acts as virtual Battery Management System
 - ✅ Controls Multi/Quattro/MPPT charging through DVCC
 - ✅ Provides `/Io/AllowToCharge` and `/Io/AllowToDischarge` flags
+Note: I'm not running this mode right now, and you shouldn't either
 
 ## Installation
 
@@ -94,8 +95,7 @@ That's it! The service will:
    # Exclude specific shunts (leave empty to include all)
    EXCLUDE_SHUNTS = 
    
-   # Manual capacity (leave empty for auto-detection)
-   TOTAL_CAPACITY = 
+   # Capacity is automatically detected from SmartShunt configuration (no setting needed)
    ```
 
 3. **Enable charge control mode (only if needed):**
@@ -123,7 +123,7 @@ dbus -y | grep battery
 ```bash
 dbus -y com.victronenergy.battery.ttyS5 /DeviceInstance GetValue
 dbus -y com.victronenergy.battery.ttyS5 /CustomName GetValue
-dbus -y com.victronenergy.battery.ttyS5 /InstalledCapacity GetValue
+dbus -y com.victronenergy.battery.ttyS5 /Soc GetValue
 ```
 
 ## How It Works
@@ -159,7 +159,6 @@ See `config.default.ini` for comprehensive documentation of all settings.
 |---------|---------|-------------|
 | `DEVICE_MODE` | `monitor` | Device mode: `monitor` or `virtual-bms` |
 | `DEVICE_NAME` | Auto | Custom name for the aggregate device |
-| `TOTAL_CAPACITY` | Auto-detect | Total capacity in Ah (leave empty for auto-detection) |
 | `EXCLUDE_SHUNTS` | None | Comma-separated list of shunt names/IDs to exclude |
 | `TEMP_COLD_DANGER` | `5.0` | Report MIN temp below this (°C) |
 | `TEMP_HOT_DANGER` | `45.0` | Report MAX temp above this (°C) |
@@ -392,7 +391,7 @@ Adapted and extended by Clinton Goudie-Nice for SmartShunt-specific use:
 - Aggregated history data from physical shunts
 - Exponential backoff for device discovery
 
-**Special thanks to Anton Labanc PhD for creating the original dbus-aggregate-batteries project and sharing it under the MIT license, making this derivative work possible!**
+**Thanks to Anton Labanc PhD for creating the original dbus-aggregate-batteries project and sharing it under the MIT license, making this derivative work easy!**
 
 ## License
 
