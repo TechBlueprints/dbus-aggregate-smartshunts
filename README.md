@@ -94,16 +94,7 @@ That's it! The service will:
    # Capacity is automatically detected from SmartShunt configuration (no setting needed)
    ```
 
-3. **Enable charge control mode (only if needed):**
-   ```ini
-   # Only set these if you have "dumb" batteries without BMS and want charge control
-   DEVICE_MODE = virtual-bms
-   MAX_CHARGE_VOLTAGE = 14.6          # e.g., 14.6V for LiFePO4
-   MAX_CHARGE_CURRENT = 300           # Combined limit for ALL batteries
-   MAX_DISCHARGE_CURRENT = 600        # Combined limit for ALL batteries
-   ```
-
-4. **Restart the service:**
+3. **Restart the service:**
    ```bash
    ./restart.sh
    ```
@@ -124,8 +115,6 @@ dbus -y com.victronenergy.battery.ttyS5 /Soc GetValue
 
 ## How It Works
 
-### Monitor Mode (Default)
-
 1. **Discovery**: Finds all SmartShunts on D-Bus (runs every second initially, then backs off exponentially)
 2. **Reactive Monitoring**: Watches for value changes on all SmartShunts
 3. **Instant Aggregation**: When any value changes:
@@ -137,14 +126,6 @@ dbus -y com.victronenergy.battery.ttyS5 /Soc GetValue
    - **History**: Aggregates charge cycles, energy throughput, min/max values
 4. **Publishing**: Updates virtual SmartShunt service immediately
 
-### BMS Mode (Optional)
-
-Same as Monitor Mode, but also:
-- Publishes `/Info/MaxChargeVoltage`, `/Info/MaxChargeCurrent`, `/Info/MaxDischargeCurrent`
-- DVCC reads these limits and applies them to all Multi/Quattro/MPPT devices
-- Publishes `/Io/AllowToCharge` and `/Io/AllowToDischarge` (both set to 1 by default)
-- Appears as "BMS" in Venus OS interface (ProductId 0xBA77 instead of 0xA389)
-
 ## Configuration Reference
 
 See `config.default.ini` for comprehensive documentation of all settings.
@@ -153,14 +134,10 @@ See `config.default.ini` for comprehensive documentation of all settings.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `DEVICE_MODE` | `monitor` | Device mode: `monitor` or `virtual-bms` |
 | `DEVICE_NAME` | Auto | Custom name for the aggregate device |
 | `EXCLUDE_SHUNTS` | None | Comma-separated list of shunt names/IDs to exclude |
 | `TEMP_COLD_DANGER` | `5.0` | Report MIN temp below this (°C) |
 | `TEMP_HOT_DANGER` | `45.0` | Report MAX temp above this (°C) |
-| `MAX_CHARGE_VOLTAGE` | Disabled | CVL for charge control modes (V) |
-| `MAX_CHARGE_CURRENT` | Disabled | CCL for charge control modes (A, combined) |
-| `MAX_DISCHARGE_CURRENT` | Disabled | DCL for charge control modes (A, combined) |
 
 ## Managing the Service
 
@@ -229,33 +206,7 @@ tail -f /data/apps/dbus-aggregate-smartshunts/service/log/current | tai64nlocal
 - SoC is capacity-weighted average
 - All alarms passed through from physical shunts
 
-### Example 2: BMS Mode for "Dumb" Batteries
-
-**System:**
-- 2× 300Ah LiFePO4 batteries (no accessible BMS)
-- 2× Victron SmartShunt 500A/50mV
-- Each battery: 150A charge max, 300A discharge max
-
-**Configuration:**
-```ini
-[DEFAULT]
-
-# Device mode: virtual-bms for charge control
-DEVICE_MODE = virtual-bms
-
-# Battery limits (these control the entire system through DVCC)
-MAX_CHARGE_VOLTAGE = 14.6      # 3.65V per cell for 4S LiFePO4
-MAX_CHARGE_CURRENT = 300       # 150A + 150A (combined)
-MAX_DISCHARGE_CURRENT = 600    # 300A + 300A (combined)
-```
-
-**Result:**
-- Appears as "Aggregate BMS" in Venus OS (ProductId 0xBA77)
-- DVCC enforces 14.6V / 300A charge / 600A discharge limits
-- Dynamically disables charge/discharge based on alarms
-- Controls all Multi/Quattro/MPPT devices automatically
-
-### Example 3: Three Shunts with Exclusion
+### Example 2: Three Shunts with Exclusion
 
 **System:**
 - 3× SmartShunts, but one monitors a house battery (not part of the bank)
@@ -324,27 +275,11 @@ If individual shunts are wrong, calibrate them in VictronConnect:
 - Sync to 100% when batteries are full
 - Ensure capacity is configured correctly
 
-### BMS mode not controlling charging
-
-**Verify DVCC is enabled:**
-- Venus OS → Settings → DVCC → Enable DVCC
-
-**Check that aggregate is the active battery:**
-- Venus OS → Settings → System Setup → Battery Monitor
-- Should show "Aggregate BMS" or similar
-
-**Verify paths are published:**
-```bash
-dbus -y com.victronenergy.battery.aggregate_shunts /Info/MaxChargeVoltage GetValue
-```
-
 ## Technical Details
 
 **D-Bus Service:** `com.victronenergy.battery.aggregate_shunts`
 
-**Product IDs:**
-- `0xA389` (41865) - Monitor mode (SmartShunt)
-- `0xBA77` (47735) - BMS mode (Battery Management System)
+**Product ID:** `0xA389` (41865) - SmartShunt
 
 **Key D-Bus Paths:**
 - `/Dc/0/Voltage` - Voltage (V)
@@ -358,11 +293,6 @@ dbus -y com.victronenergy.battery.aggregate_shunts /Info/MaxChargeVoltage GetVal
 - `/TimeToGo` - Time remaining (seconds)
 - `/History/*` - Aggregated history data
 - `/Alarms/*` - Passed through from physical shunts
-- `/Info/MaxChargeVoltage` - CVL (V, BMS mode only)
-- `/Info/MaxChargeCurrent` - CCL (A, BMS mode only)
-- `/Info/MaxDischargeCurrent` - DCL (A, BMS mode only)
-- `/Io/AllowToCharge` - Charge enable flag (BMS mode only)
-- `/Io/AllowToDischarge` - Discharge enable flag (BMS mode only)
 
 ## Credits
 
