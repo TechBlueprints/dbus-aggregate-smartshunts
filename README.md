@@ -34,19 +34,6 @@ When you have multiple batteries in parallel, each with their own SmartShunt, th
 - ✅ **Completely stateless** - all data derived from physical SmartShunts
 - ✅ **Exponential backoff** for device discovery (reduces D-Bus traffic)
 
-## Pure Monitoring Only
-
-**This service is PURE MONITORING - it does NOT provide charge control.**
-
-The aggregate SmartShunt:
-- ✅ Reports all SmartShunt data (voltage, current, SoC, temperature, alarms, history)
-- ✅ Appears as a SmartShunt (ProductId 0xA389) in Venus OS
-- ❌ Does NOT publish charge limits (CVL/CCL/DCL)
-- ❌ Does NOT control charging/discharging
-- ❌ Does NOT appear as a BMS
-
-**Need charge control?** Use the companion project [dbus-smartshunt-to-bms](https://github.com/TechBlueprints/dbus-smartshunt-to-bms) which converts SmartShunts into virtual BMS devices with full charge control capabilities.
-
 ## Installation
 
 ### Prerequisites
@@ -395,7 +382,6 @@ Adapted and extended by Clinton Goudie-Nice for SmartShunt-specific use:
 - Reactive updates (event-driven instead of polling)
 - Auto-detection of SmartShunts and capacity
 - Smart voltage/temperature algorithms prioritizing battery safety
-- Optional BMS mode with configurable charge control
 - Stateless operation (all data derived from physical devices)
 - Aggregated history data from physical shunts
 - Exponential backoff for device discovery
