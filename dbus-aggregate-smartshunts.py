@@ -1323,8 +1323,16 @@ def main():
     # Create service (but don't register on D-Bus yet)
     service = DbusAggregateSmartShunts(config)
     
-    # Register service on D-Bus now that we're about to start the main loop
+    # Perform initial aggregation to ensure we have valid data (voltage != None)
+    # This is important because dbus-systemcalc-py only includes batteries in
+    # /AvailableBatteries if they have a valid voltage. If we register before
+    # aggregating, we'll be "invalid" and won't appear in the GUI battery list.
+    logging.info("Performing initial aggregation before registering service...")
+    service._update()
+    
+    # Register service on D-Bus now that we have valid data
     # This ensures the service can respond to D-Bus method calls immediately
+    # and will be recognized by systemcalc as a valid battery
     service.register()
     
     # Run main loop
