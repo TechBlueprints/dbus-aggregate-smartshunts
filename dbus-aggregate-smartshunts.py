@@ -44,7 +44,7 @@ def get_bus():
 
 class DbusAggregateSmartShunts:
     
-    def __init__(self, config, servicename="com.victronenergy.battery.aggregate_shunts"):
+    def __init__(self, config, servicename="com.victronenergy.battery.aggregateshunts"):
         self.config = config
         self._shunts = []
         self._dbusConn = get_bus()
@@ -72,8 +72,12 @@ class DbusAggregateSmartShunts:
         self._dbusservice.add_path("/Mgmt/ProcessVersion", "Python " + platform.python_version())
         self._dbusservice.add_path("/Mgmt/Connection", "Virtual SmartShunt Aggregator")
         
+        # Find an available device instance (check what's already in use)
+        device_instance = self._find_available_device_instance()
+        logging.info(f"### Using device instance: {device_instance}")
+        
         # Create mandatory objects
-        self._dbusservice.add_path("/DeviceInstance", 100)
+        self._dbusservice.add_path("/DeviceInstance", device_instance)
         
         # Always use SmartShunt ProductId (monitor mode only - no charge control)
         # For BMS functionality, use dbus-smartshunt-to-bms project instead
@@ -87,8 +91,8 @@ class DbusAggregateSmartShunts:
             gettextcallback=lambda a, x: f"0x{x:X}" if x and isinstance(x, int) else "")
         self._dbusservice.add_path("/ProductName", device_name)
         
-        # Mirror firmware version from first physical shunt
-        self._dbusservice.add_path("/FirmwareVersion", config.get('FIRMWARE_VERSION', VERSION))
+        # Mirror firmware version from first physical shunt (must be integer like physical shunts)
+        self._dbusservice.add_path("/FirmwareVersion", config['FIRMWARE_VERSION_INT'])
         # Hardware version: physical SmartShunts don't have one (empty), so we shouldn't either
         self._dbusservice.add_path("/HardwareVersion", [],
             gettextcallback=lambda a, x: "")
@@ -226,7 +230,7 @@ class DbusAggregateSmartShunts:
         
         # Create /Devices/0/* paths for the aggregate itself (like physical shunts do)
         self._dbusservice.add_path("/Devices/0/CustomName", device_name)
-        self._dbusservice.add_path("/Devices/0/DeviceInstance", 100)  # Our device instance
+        self._dbusservice.add_path("/Devices/0/DeviceInstance", device_instance)  # Use same instance as main device
         # Use firmware version from first detected shunt (integer format)
         self._dbusservice.add_path("/Devices/0/FirmwareVersion", 
             config.get('FIRMWARE_VERSION_INT'),
@@ -234,7 +238,7 @@ class DbusAggregateSmartShunts:
         self._dbusservice.add_path("/Devices/0/ProductId", product_id,
             gettextcallback=lambda a, x: f"0x{x:X}" if x and isinstance(x, int) else "")
         self._dbusservice.add_path("/Devices/0/ProductName", "Virtual SmartShunt Aggregate")
-        self._dbusservice.add_path("/Devices/0/ServiceName", "com.victronenergy.battery.aggregate_shunts")
+        self._dbusservice.add_path("/Devices/0/ServiceName", "com.victronenergy.battery.aggregateshunts")
         self._dbusservice.add_path("/Devices/0/VregLink", [],
             gettextcallback=lambda a, x: "")
         # Flag to identify this as a virtual aggregate (so dbus-smartshunt-to-bms can exclude it)
@@ -254,6 +258,33 @@ class DbusAggregateSmartShunts:
         
         # Start searching for SmartShunts
         GLib.timeout_add_seconds(self.config['UPDATE_INTERVAL_FIND_DEVICES'], self._find_smartshunts)
+    
+    def _find_available_device_instance(self):
+        """Find an available device instance number that's not already in use"""
+        # Get all battery services and their device instances
+        used_instances = set()
+        try:
+            for service in self._dbusConn.list_names():
+                if "com.victronenergy.battery" in service:
+                    try:
+                        obj = self._dbusConn.get_object(service, '/DeviceInstance')
+                        iface = dbus.Interface(obj, 'com.victronenergy.BusItem')
+                        instance = iface.GetValue()
+                        if instance is not None:
+                            used_instances.add(int(instance))
+                    except:
+                        pass  # Service might not have DeviceInstance yet
+        except Exception as e:
+            logging.warning(f"Error checking used device instances: {e}")
+        
+        # Start from 100 and find first available
+        for candidate in range(100, 300):
+            if candidate not in used_instances:
+                return candidate
+        
+        # Fallback to 100 if somehow all are taken (unlikely)
+        logging.warning("All device instances 100-299 appear to be in use, using 100 anyway")
+        return 100
     
     def _init_dbusmonitor(self):
         """Initialize D-Bus monitor for SmartShunt services with reactive updates"""
@@ -343,8 +374,14 @@ class DbusAggregateSmartShunts:
                 if "com.victronenergy.battery" in service:
                     product_name = self._dbusmon.get_value(service, "/ProductName")
                     
-                    # Check if this is a SmartShunt
+                    # Check if this is a SmartShunt (but not a virtual aggregate)
                     if product_name and "SmartShunt" in product_name:
+                        # Skip if this is a virtual/aggregate device (to avoid aggregating ourselves)
+                        is_virtual = self._dbusmon.get_value(service, "/Devices/0/Virtual")
+                        if is_virtual == 1:
+                            logging.debug(f"Skipping virtual device: {service}")
+                            continue
+                        
                         device_instance = self._dbusmon.get_value(service, "/DeviceInstance")
                         custom_name = self._dbusmon.get_value(service, "/CustomName")
                         
