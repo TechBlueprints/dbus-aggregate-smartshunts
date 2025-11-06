@@ -80,17 +80,17 @@ class DbusAggregateSmartShunts:
         # Create mandatory objects
         self._dbusservice.add_path("/DeviceInstance", device_instance)
         
-        # Always use SmartShunt ProductId (monitor mode only - no charge control)
-        # For BMS functionality, use dbus-smartshunt-to-bms project instead
-        product_id = 0xA389  # SmartShunt
-        default_name = "SmartShunt Aggregate"
+        # Use ProductId and ProductName from first physical shunt (for VRM compatibility)
+        # This ensures VRM recognizes the aggregate as the same type of device
+        product_id = config.get('PRODUCT_ID', 0xA389)  # Default to SmartShunt if not found
+        product_name = config.get('PRODUCT_NAME', 'SmartShunt 500A/50mV')  # Default to common SmartShunt model
         
-        # Use custom name if provided, otherwise use default
-        device_name = config['DEVICE_NAME'] if config['DEVICE_NAME'] else default_name
+        # CustomName can be overridden in config, but ProductName should match physical shunt
+        custom_name = config['DEVICE_NAME'] if config['DEVICE_NAME'] else "SmartShunt Aggregate"
         
         self._dbusservice.add_path("/ProductId", product_id,
             gettextcallback=lambda a, x: f"0x{x:X}" if x and isinstance(x, int) else "")
-        self._dbusservice.add_path("/ProductName", device_name)
+        self._dbusservice.add_path("/ProductName", product_name)
         
         # Mirror firmware version from first physical shunt (must be integer like physical shunts)
         self._dbusservice.add_path("/FirmwareVersion", config['FIRMWARE_VERSION_INT'])
@@ -99,7 +99,7 @@ class DbusAggregateSmartShunts:
             gettextcallback=lambda a, x: "")
         self._dbusservice.add_path("/Connected", 1)
         self._dbusservice.add_path("/Serial", "AGGREGATE01")
-        self._dbusservice.add_path("/CustomName", device_name)
+        self._dbusservice.add_path("/CustomName", custom_name)
         
         # Create DC paths
         self._dbusservice.add_path("/Dc/0/Voltage", None, writeable=True,
@@ -230,7 +230,7 @@ class DbusAggregateSmartShunts:
         self._device_paths = {}  # {instance: [list of paths]}
         
         # Create /Devices/0/* paths for the aggregate itself (like physical shunts do)
-        self._dbusservice.add_path("/Devices/0/CustomName", device_name)
+        self._dbusservice.add_path("/Devices/0/CustomName", custom_name)
         self._dbusservice.add_path("/Devices/0/DeviceInstance", device_instance)  # Use same instance as main device
         # Use firmware version from first detected shunt (integer format)
         self._dbusservice.add_path("/Devices/0/FirmwareVersion", 
@@ -238,7 +238,7 @@ class DbusAggregateSmartShunts:
             gettextcallback=lambda a, x: f"v{(x >> 8) & 0xFF}.{x & 0xFF:x}" if x and isinstance(x, int) else "")
         self._dbusservice.add_path("/Devices/0/ProductId", product_id,
             gettextcallback=lambda a, x: f"0x{x:X}" if x and isinstance(x, int) else "")
-        self._dbusservice.add_path("/Devices/0/ProductName", "Virtual SmartShunt Aggregate")
+        self._dbusservice.add_path("/Devices/0/ProductName", f"{product_name} (Aggregate)")
         self._dbusservice.add_path("/Devices/0/ServiceName", "com.victronenergy.battery.aggregateshunts")
         self._dbusservice.add_path("/Devices/0/VregLink", [],
             gettextcallback=lambda a, x: "")
@@ -1078,10 +1078,13 @@ def main():
             logging.error("No SmartShunts found!")
             raise ValueError("No SmartShunts available to aggregate")
         
-        # Read firmware/hardware version from first shunt to mirror it
+        # Read firmware/hardware/product info from first shunt to mirror it
         first_shunt_firmware = None
         first_shunt_firmware_int = None
         first_shunt_hardware = None
+        first_shunt_product_name = None
+        first_shunt_product_id = None
+        
         try:
             obj = bus.get_object(shunt_services[0], '/FirmwareVersion')
             iface = dbus.Interface(obj, 'com.victronenergy.BusItem')
@@ -1109,6 +1112,22 @@ def main():
                 logging.info(f"|- First shunt hardware: {first_shunt_hardware}")
         except Exception as e:
             logging.debug(f"|- Hardware version not available: {e}")
+        
+        try:
+            obj = bus.get_object(shunt_services[0], '/ProductName')
+            iface = dbus.Interface(obj, 'com.victronenergy.BusItem')
+            first_shunt_product_name = iface.GetValue()
+            logging.info(f"|- First shunt product name: {first_shunt_product_name}")
+        except Exception as e:
+            logging.warning(f"|- Could not read product name: {e}")
+        
+        try:
+            obj = bus.get_object(shunt_services[0], '/ProductId')
+            iface = dbus.Interface(obj, 'com.victronenergy.BusItem')
+            first_shunt_product_id = iface.GetValue()
+            logging.info(f"|- First shunt product ID: 0x{first_shunt_product_id:X}")
+        except Exception as e:
+            logging.warning(f"|- Could not read product ID: {e}")
         
         # Read configuration from all shunts
         logging.info(f"Reading configuration from {len(shunt_services)} SmartShunt(s)...")
@@ -1268,6 +1287,8 @@ def main():
         'FIRMWARE_VERSION': first_shunt_firmware if 'first_shunt_firmware' in locals() and first_shunt_firmware else VERSION,
         'FIRMWARE_VERSION_INT': first_shunt_firmware_int if 'first_shunt_firmware_int' in locals() and first_shunt_firmware_int else None,
         'HARDWARE_VERSION': first_shunt_hardware if 'first_shunt_hardware' in locals() and first_shunt_hardware else VERSION,
+        'PRODUCT_NAME': first_shunt_product_name if 'first_shunt_product_name' in locals() and first_shunt_product_name else None,
+        'PRODUCT_ID': first_shunt_product_id if 'first_shunt_product_id' in locals() and first_shunt_product_id else 0xA389,  # Default to SmartShunt
         'MIN_CHARGED_VOLTAGE': min_charged_voltage if 'min_charged_voltage' in locals() else None,
         'TEMP_COLD_DANGER': settings.TEMP_COLD_DANGER,
         'TEMP_HOT_DANGER': settings.TEMP_HOT_DANGER,
