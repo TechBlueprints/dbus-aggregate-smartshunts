@@ -126,7 +126,7 @@ def get_list_from_config(group: str, option: str) -> list:
 # Device Configuration
 DEVICE_NAME = config["DEFAULT"].get("DEVICE_NAME", "").strip()
 if not DEVICE_NAME:
-    DEVICE_NAME = "SmartShunt Aggregate"
+    DEVICE_NAME = "SmartShunts"
 
 # SmartShunt Configuration
 EXCLUDE_SHUNTS = get_list_from_config("DEFAULT", "EXCLUDE_SHUNTS")
