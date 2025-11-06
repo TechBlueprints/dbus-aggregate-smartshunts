@@ -253,15 +253,29 @@ class DbusAggregateSmartShunts:
         self._dbusservice.add_path("/VEDirect/TextParseError", None)
         self._dbusservice.add_path("/VEDirect/TextUnfinishedErrors", None)
         
-        # Register service
+        # Store device_instance for later registration
+        self._device_instance = device_instance
+        
+        # Don't register yet - wait until main loop is ready
+        # This prevents D-Bus timeout issues when DbusMonitor tries to call GetItems
+        # before the main loop is running
+        
+        # Start searching for SmartShunts
+        GLib.timeout_add_seconds(self.config['UPDATE_INTERVAL_FIND_DEVICES'], self._find_smartshunts)
+    
+    def register(self):
+        """Register the D-Bus service and device settings.
+        
+        Should be called after __init__ but before starting the main loop.
+        This ensures the service is ready to handle D-Bus method calls.
+        """
         logging.info("### Registering VeDbusService")
         self._dbusservice.register()
         
         # Register device in settings (for GUI device list)
-        self._register_device_settings(device_instance)
+        self._register_device_settings(self._device_instance)
         
-        # Start searching for SmartShunts
-        GLib.timeout_add_seconds(self.config['UPDATE_INTERVAL_FIND_DEVICES'], self._find_smartshunts)
+        logging.info("Service registered and ready")
     
     def _find_available_device_instance(self):
         """Find an available device instance number that's not already in use"""
@@ -1306,8 +1320,12 @@ def main():
     logging.info(f"|- Charge control: DISABLED")
     logging.info(f"|  For BMS functionality (CVL/CCL/DCL), use dbus-smartshunt-to-bms project")
     
-    # Create service
-    DbusAggregateSmartShunts(config)
+    # Create service (but don't register on D-Bus yet)
+    service = DbusAggregateSmartShunts(config)
+    
+    # Register service on D-Bus now that we're about to start the main loop
+    # This ensures the service can respond to D-Bus method calls immediately
+    service.register()
     
     # Run main loop
     logging.info("Connected to D-Bus, starting main loop")
