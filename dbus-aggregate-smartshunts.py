@@ -24,6 +24,7 @@ sys.path.insert(1, os.path.join(os.path.dirname(__file__), "ext", "velib_python"
 
 from vedbus import VeDbusService
 from dbusmonitor import DbusMonitor
+from settingsdevice import SettingsDevice
 
 VERSION = "1.0.0"
 
@@ -256,6 +257,9 @@ class DbusAggregateSmartShunts:
         logging.info("### Registering VeDbusService")
         self._dbusservice.register()
         
+        # Register device in settings (for GUI device list)
+        self._register_device_settings(device_instance)
+        
         # Start searching for SmartShunts
         GLib.timeout_add_seconds(self.config['UPDATE_INTERVAL_FIND_DEVICES'], self._find_smartshunts)
     
@@ -285,6 +289,41 @@ class DbusAggregateSmartShunts:
         # Fallback to 100 if somehow all are taken (unlikely)
         logging.warning("All device instances 100-299 appear to be in use, using 100 anyway")
         return 100
+    
+    def _register_device_settings(self, device_instance):
+        """Register device in com.victronenergy.settings for GUI device list"""
+        try:
+            # Create unique identifier for settings path (using serial number)
+            unique_id = "aggregateshunts_AGGREGATE01"
+            settings_path = f"/Settings/Devices/{unique_id}"
+            
+            # Create ClassAndVrmInstance setting
+            class_and_vrm_instance = f"battery:{device_instance}"
+            
+            # Use SettingsDevice to register the device
+            # This makes it appear in the GUI device list
+            settings = {
+                "ClassAndVrmInstance": [
+                    f"{settings_path}/ClassAndVrmInstance",
+                    class_and_vrm_instance,
+                    0,
+                    0,
+                ],
+            }
+            
+            # Initialize SettingsDevice (will create the settings if they don't exist)
+            self._settings = SettingsDevice(
+                self._dbusConn,
+                settings,
+                eventCallback=None,  # No callback needed for now
+                timeout=10
+            )
+            
+            logging.info(f"Registered device settings: {settings_path}/ClassAndVrmInstance = {class_and_vrm_instance}")
+            
+        except Exception as e:
+            logging.error(f"Failed to register device settings: {e}")
+            # Don't fail the whole service if settings registration fails
     
     def _init_dbusmonitor(self):
         """Initialize D-Bus monitor for SmartShunt services with reactive updates"""
