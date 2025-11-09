@@ -396,8 +396,10 @@ class DbusAggregateSmartShunts:
         }
         
         # Set up reactive updates - callback fires whenever any monitored value changes
+        # IMPORTANT: Exclude our own service from monitoring to prevent "GetItems failed" errors
         self._dbusmon = DbusMonitor(monitorlist, valueChangedCallback=self._on_value_changed,
-                                     deviceAddedCallback=None, deviceRemovedCallback=None)
+                                     deviceAddedCallback=None, deviceRemovedCallback=None,
+                                     ignoreServices=['com.victronenergy.battery.aggregateshunts'])
     
     def _on_value_changed(self, dbusServiceName, dbusPath, options, changes, deviceInstance):
         """
