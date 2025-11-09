@@ -1323,6 +1323,34 @@ def main():
     # Create service (but don't register on D-Bus yet)
     service = DbusAggregateSmartShunts(config)
     
+    # Wait for smartshunts to appear before registering
+    # This prevents "GetItems failed" errors from systemcalc trying to query us
+    # before we're ready to respond
+    logging.info("Waiting for SmartShunts to appear on D-Bus before registering...")
+    
+    # Give dbusmonitor a moment to populate its values after the initial scan
+    tt.sleep(1)
+    
+    # Do an initial search synchronously
+    service._find_smartshunts()
+    
+    # If still no shunts found, wait up to 30 seconds
+    max_wait = 30  # Maximum 30 seconds
+    wait_count = 1  # We already waited 1 second above
+    while len(service._shunts) == 0 and wait_count < max_wait:
+        tt.sleep(1)
+        wait_count += 1
+        if wait_count % 5 == 0:
+            logging.info(f"Still waiting for SmartShunts... ({wait_count}s)")
+            # Try searching again
+            service._find_smartshunts()
+    
+    if len(service._shunts) == 0:
+        logging.error("No SmartShunts found after 30 seconds! Service will not register.")
+        sys.exit(1)
+    
+    logging.info(f"Found {len(service._shunts)} SmartShunt(s), proceeding with registration")
+    
     # Perform initial aggregation to ensure we have valid data (voltage != None)
     # This is important because dbus-systemcalc-py only includes batteries in
     # /AvailableBatteries if they have a valid voltage. If we register before
@@ -1330,14 +1358,21 @@ def main():
     logging.info("Performing initial aggregation before registering service...")
     service._update()
     
-    # Register service on D-Bus now that we have valid data
-    # This ensures the service can respond to D-Bus method calls immediately
-    # and will be recognized by systemcalc as a valid battery
-    service.register()
-    
-    # Run main loop
-    logging.info("Connected to D-Bus, starting main loop")
+    # Start main loop first
+    logging.info("Starting main loop...")
     mainloop = GLib.MainLoop()
+    
+    # Register service on D-Bus once the main loop is running
+    # This ensures the service can respond to D-Bus method calls immediately
+    # Schedule registration to happen on the next idle cycle
+    def do_registration():
+        logging.info("Main loop running, now registering service on D-Bus...")
+        service.register()
+        logging.info("Service registered and ready")
+        return False  # Don't repeat
+    
+    GLib.idle_add(do_registration)
+    
     mainloop.run()
 
 
