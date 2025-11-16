@@ -72,7 +72,12 @@ That's it! The service will:
 
 ### Optional Configuration
 
-**Most users don't need a config file!** But if you want to customize:
+**No config file is required!** The service runs with sensible defaults:
+- Device name: "SmartShunts" (editable in UI)
+- Temperature thresholds: Configurable via UI switches (see below)
+- SmartShunt selection: Managed via UI switches (see below)
+
+**Advanced users only:** If you need to customize operational settings (logging, polling intervals, error handling), you can create a `config.ini` file:
 
 1. **Create your config:**
    ```bash
@@ -80,18 +85,20 @@ That's it! The service will:
    nano config.ini
    ```
 
-2. **Recommended settings to review:**
+2. **Optional settings:**
    ```ini
    [DEFAULT]
    
-   # Temperature thresholds (adjust for your battery chemistry)
-   TEMP_COLD_DANGER = 5.0    # LiFePO4: 5°C, Lead-Acid: 0°C
-   TEMP_HOT_DANGER = 45.0    # LiFePO4: 45°C, Lead-Acid: 40°C
+   # Device name (also editable in UI)
+   DEVICE_NAME = SmartShunts
    
-   # Exclude specific shunts (leave empty to include all)
-   EXCLUDE_SHUNTS = 
+   # Logging level for troubleshooting
+   LOGGING = INFO  # Options: ERROR, WARNING, INFO, DEBUG
    
-   # Capacity is automatically detected from SmartShunt configuration (no setting needed)
+   # Advanced operational settings (rarely need changing)
+   UPDATE_INTERVAL_FIND_DEVICES = 1
+   MAX_UPDATE_INTERVAL_FIND_DEVICES = 1800
+   LOG_PERIOD = 300
    ```
 
 3. **Restart the service:**
@@ -116,28 +123,55 @@ dbus -y com.victronenergy.battery.ttyS5 /Soc GetValue
 ## How It Works
 
 1. **Discovery**: Finds all SmartShunts on D-Bus (runs every second initially, then backs off exponentially)
-2. **Reactive Monitoring**: Watches for value changes on all SmartShunts
-3. **Instant Aggregation**: When any value changes:
-   - **Current**: Sums all shunt currents (parallel batteries = currents add)
+2. **UI Switches**: Each discovered SmartShunt gets a toggle switch in the Venus OS UI (Settings -> Switches)
+3. **Reactive Monitoring**: Watches for value changes on all enabled SmartShunts
+4. **Instant Aggregation**: When any value changes:
+   - **Current**: Sums all enabled shunt currents (parallel batteries = currents add)
    - **Voltage**: Smart selection based on alarm states (reports most critical voltage)
    - **SoC**: Capacity-weighted average (accounts for different battery sizes)
    - **Temperature**: Smart selection (reports coldest when near freezing, hottest when overheating, average otherwise)
    - **Alarms**: Logical OR (if any shunt alarms, aggregate alarms)
    - **History**: Aggregates charge cycles, energy throughput, min/max values
-4. **Publishing**: Updates virtual SmartShunt service immediately
+5. **Publishing**: Updates virtual SmartShunt service immediately
 
 ## Configuration Reference
 
 See `config.default.ini` for comprehensive documentation of all settings.
 
-**Key settings:**
+**All settings have defaults - config file is optional!**
 
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `DEVICE_NAME` | Auto | Custom name for the aggregate device |
-| `EXCLUDE_SHUNTS` | None | Comma-separated list of shunt names/IDs to exclude |
-| `TEMP_COLD_DANGER` | `5.0` | Report MIN temp below this (°C) |
-| `TEMP_HOT_DANGER` | `45.0` | Report MAX temp above this (°C) |
+The config file is only needed for advanced operational settings like logging levels, polling intervals, and error handling timeouts. All functional settings (device name, temperature thresholds, SmartShunt selection) are managed via the UI.
+
+## Managing SmartShunts via UI Switches
+
+All SmartShunt discovery and control is now managed via the Venus OS UI:
+
+1. **Discovery Switch**: Navigate to **Settings -> Switches** and find "* SmartShunt Discovery"
+   - **ON** (default): Service scans for new SmartShunts and creates switches for them
+   - **OFF**: Stops scanning, hides all switches (but continues aggregating enabled shunts)
+
+2. **Individual Shunt Switches**: Each discovered SmartShunt gets its own toggle switch
+   - **ON** (default): Shunt is included in the aggregate
+   - **OFF**: Shunt is excluded from the aggregate
+
+3. **Temperature Threshold Switches**: Two dimmable slider controls for smart temperature reporting
+   - **Cold Limit**: Default 50°F (10°C) - adjustable from -58°F to 212°F (-50°C to 100°C)
+     - Below this temperature, the aggregate reports the coldest battery temperature
+     - Reset to default by toggling the switch off and back on
+   - **Hot Limit**: Default 105°F (40.5°C) - adjustable from -58°F to 212°F (-50°C to 100°C)
+     - Above this temperature, the aggregate reports the hottest battery temperature
+     - Reset to default by toggling the switch off and back on
+   - Between thresholds, the aggregate reports the average temperature
+   - The switch label shows the current setting in both Celsius and Fahrenheit
+
+4. **Hiding Switches**: When you're done configuring, turn off "SmartShunt Discovery" to hide all switches from the main UI. They remain accessible in the device settings if you need to change them later.
+
+**Example Use Cases:**
+- Exclude a DC loads shunt from your battery aggregate
+- Temporarily disable a shunt for testing
+- Separate house batteries from starter battery monitoring
+- Adjust temperature thresholds for LiFePO4 (wider range) vs Lead-Acid (narrower range)
+- Set temperature limits based on battery chemistry charge/discharge windows
 
 ## Managing the Service
 
@@ -206,18 +240,16 @@ tail -f /data/apps/dbus-aggregate-smartshunts/service/log/current | tai64nlocal
 - SoC is capacity-weighted average
 - All alarms passed through from physical shunts
 
-### Example 2: Three Shunts with Exclusion
+### Example 2: Three Shunts with Selective Aggregation
 
 **System:**
 - 3× SmartShunts, but one monitors a house battery (not part of the bank)
 
 **Configuration:**
-```ini
-[DEFAULT]
-
-# Exclude the house battery shunt
-EXCLUDE_SHUNTS = "House Battery"
-```
+1. All three shunts are discovered automatically
+2. Navigate to **Settings -> Switches**
+3. Toggle OFF the "House Battery" switch
+4. Toggle OFF "SmartShunt Discovery" to hide switches
 
 **Result:**
 - Only aggregates the two bank shunts
@@ -234,7 +266,6 @@ tail -n 50 /data/apps/dbus-aggregate-smartshunts/service/log/current | tai64nloc
 
 **Common issues:**
 - **Python errors**: Check syntax if you edited the code
-- **Config errors**: Check `config.ini` syntax (or delete it to use defaults)
 - **Permission errors**: Ensure scripts are executable (`chmod +x *.sh`)
 
 ### SmartShunts not found
@@ -257,11 +288,6 @@ Should see "SmartShunt" in the product name.
 - SoC must be between 10-90% (most accurate at 30-70%)
 - All SmartShunts must have capacity configured in VictronConnect
 - ConsumedAmphours must be available
-
-**Manual override:**
-```ini
-TOTAL_CAPACITY = 600  # Set manually if auto-detection fails
-```
 
 ### SoC seems incorrect
 

@@ -128,9 +128,6 @@ DEVICE_NAME = config["DEFAULT"].get("DEVICE_NAME", "").strip()
 if not DEVICE_NAME:
     DEVICE_NAME = "SmartShunts"
 
-# SmartShunt Configuration
-EXCLUDE_SHUNTS = get_list_from_config("DEFAULT", "EXCLUDE_SHUNTS")
-
 # Battery Specifications
 # Capacity is always read from SmartShunt configuration registers (no config needed)
 
@@ -141,10 +138,7 @@ DEVICE_NAME = config["DEFAULT"].get("DEVICE_NAME", "").strip()
 # has been removed from this project. This is now pure monitoring only.
 # For BMS functionality, use the dbus-smartshunt-to-bms project instead.
 
-
-# Temperature Monitoring
-TEMP_COLD_DANGER = get_float_from_config("DEFAULT", "TEMP_COLD_DANGER", 5.0)
-TEMP_HOT_DANGER = get_float_from_config("DEFAULT", "TEMP_HOT_DANGER", 45.0)
+# Temperature thresholds are now managed via UI switches, not config file
 
 # Update Intervals
 UPDATE_INTERVAL_FIND_DEVICES = get_int_from_config("DEFAULT", "UPDATE_INTERVAL_FIND_DEVICES", 1)

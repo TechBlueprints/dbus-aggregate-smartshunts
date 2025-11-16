@@ -65,6 +65,11 @@ class DbusAggregateSmartShunts:
         # Flag to track if we've already logged TTG divergence warning (only log once per session)
         self._ttg_divergence_logged = False
         
+        # Switch management for discovered shunts
+        self.discovery_enabled = True  # Default to enabled
+        self.shunt_switches = {}  # Maps service_name -> {'relay_id': int, 'enabled': bool}
+        self.next_relay_id = 1  # Start at 1 (relay_0 is discovery switch)
+        
         logging.info("### Initializing VeDbusService")
         self._dbusservice = VeDbusService(servicename, self._dbusConn, register=False)
         
@@ -256,6 +261,103 @@ class DbusAggregateSmartShunts:
         # Store device_instance for later registration
         self._device_instance = device_instance
         
+        # Add master discovery switch (relay_0)
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/Name', '* SmartShunt Discovery')
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/Type', 1)  # Toggle switch
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/State', 1, 
+                                   writeable=True, onchangecallback=self._on_discovery_changed)
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/Status', 0x00)
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/Current', 0)
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/CustomName', '', writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/Type', 1, writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/ValidTypes', 2)
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/Function', 2, writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/ValidFunctions', 4)
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/Group', '', writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/ShowUIControl', 1, writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/PowerOnState', 1)
+        
+        # Add temperature threshold switches (using reserved relay IDs)
+        # Defaults: 50°F (10°C) for cold limit, 105°F (40.5°C) for hot limit
+        # Note: GUI slider is hardcoded 1-100, so we map slider values to actual temperature range:
+        # - Both sliders: 1-100 maps to -50°C to 100°C (150°C range, ~1.5°C per slider step)
+        DEFAULT_TEMP_LOW = 10.0   # 50°F / 10°C
+        DEFAULT_TEMP_HIGH = 40.5  # 105°F / 40.5°C
+        
+        # Temperature range constants (both sliders use same range)
+        TEMP_MIN = -50.0   # Minimum temperature threshold
+        TEMP_MAX = 100.0   # Maximum temperature threshold
+        
+        # Store temperature range constants as instance variables
+        self._temp_min = TEMP_MIN
+        self._temp_max = TEMP_MAX
+        
+        # Convert default temperatures to slider positions (1-100 range)
+        initial_low_slider = self._temp_to_slider(DEFAULT_TEMP_LOW)
+        initial_high_slider = self._temp_to_slider(DEFAULT_TEMP_HIGH)
+        
+        # Low temp threshold (relay_temp_low)
+        # Note: Using Type 2 (Dimmable/PWM) because GUI only displays Types 0, 1, and 2 in switches pane
+        # GUI slider is hardcoded 1-100, so DimmingMin/Max are informational only
+        # Initial display name with both C and F
+        initial_low_f = DEFAULT_TEMP_LOW * 9/5 + 32
+        self._default_temp_low = DEFAULT_TEMP_LOW
+        self._default_temp_low_slider = initial_low_slider
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Name', f'Cold Limit: {DEFAULT_TEMP_LOW:.0f}°C / {initial_low_f:.0f}°F')
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Type', 2)  # Dimmable
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/State', 1, writeable=True, 
+                                   onchangecallback=self._on_temp_low_state_changed)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Status', 0x09, writeable=True)  # On status (no badge)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Current', 0)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Dimming', initial_low_slider, 
+                                   writeable=True, onchangecallback=self._on_temp_low_changed)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Measurement', DEFAULT_TEMP_LOW, writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/CustomName', '', writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/Type', 2, writeable=False)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/ValidTypes', 4)  # Only dimmable (bit 2)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/Function', 2, writeable=True)  # Manual
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/ValidFunctions', 4)  # Bit 2 = Manual only
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/Group', '', writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/PowerOnState', 1)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/DimmingMin', 0.0)  # 0°C min
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/DimmingMax', 50.0)   # 50°C max
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/StepSize', 0.5)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/Decimals', 1)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/ShowUIControl', 1, writeable=True)
+        
+        # High temp threshold (relay_temp_high)
+        # Note: Using Type 2 (Dimmable/PWM) because GUI only displays Types 0, 1, and 2 in switches pane
+        # GUI slider is hardcoded 1-100, so DimmingMin/Max are informational only
+        # Initial display name with both C and F
+        initial_high_f = DEFAULT_TEMP_HIGH * 9/5 + 32
+        self._default_temp_high = DEFAULT_TEMP_HIGH
+        self._default_temp_high_slider = initial_high_slider
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Name', f'Hot Limit: {DEFAULT_TEMP_HIGH:.0f}°C / {initial_high_f:.0f}°F')
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Type', 2)  # Dimmable
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/State', 1, writeable=True,
+                                   onchangecallback=self._on_temp_high_state_changed)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Status', 0x09, writeable=True)  # On status (no badge)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Current', 0)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Dimming', initial_high_slider, 
+                                   writeable=True, onchangecallback=self._on_temp_high_changed)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Measurement', DEFAULT_TEMP_HIGH, writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/CustomName', '', writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/Type', 2, writeable=False)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/ValidTypes', 4)  # Only dimmable (bit 2)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/Function', 2, writeable=True)  # Manual
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/ValidFunctions', 4)  # Bit 2 = Manual only
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/Group', '', writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/PowerOnState', 1)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/DimmingMin', 0.0)   # 0°C min
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/DimmingMax', 50.0)   # 50°C max
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/StepSize', 0.5)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/Decimals', 1)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/ShowUIControl', 1, writeable=True)
+        
+        # Store defaults for fallback use in aggregation
+        self._default_temp_low = DEFAULT_TEMP_LOW
+        self._default_temp_high = DEFAULT_TEMP_HIGH
+        
         # Don't register yet - wait until main loop is ready
         # This prevents D-Bus timeout issues when DbusMonitor tries to call GetItems
         # before the main loop is running
@@ -418,8 +520,194 @@ class DbusAggregateSmartShunts:
                 # Use GLib.idle_add to avoid blocking the D-Bus callback
                 GLib.idle_add(self._update)
     
+    def _on_temp_low_state_changed(self, path: str, value):
+        """Handle low temp threshold on/off state - reset to default when turned off"""
+        new_state = bool(int(value) if isinstance(value, str) else value)
+        logging.info(f"Low temp threshold state changed to {'On' if new_state else 'Off'}")
+        
+        if not new_state:
+            # When turned off, reset to default
+            try:
+                self._dbusservice['/SwitchableOutput/relay_temp_low/Dimming'] = self._default_temp_low_slider
+                self._dbusservice['/SwitchableOutput/relay_temp_low/Measurement'] = self._default_temp_low
+                default_f = self._default_temp_low * 9/5 + 32
+                self._dbusservice['/SwitchableOutput/relay_temp_low/Name'] = f'Cold Limit: {self._default_temp_low:.0f}°C / {default_f:.0f}°F'
+                # Turn it back on automatically after resetting
+                self._dbusservice['/SwitchableOutput/relay_temp_low/State'] = 1
+            except Exception as e:
+                logging.error(f"Failed to reset low temp to default: {e}")
+        return True
+    
+    def _on_temp_high_state_changed(self, path: str, value):
+        """Handle high temp threshold on/off state - reset to default when turned off"""
+        new_state = bool(int(value) if isinstance(value, str) else value)
+        logging.info(f"High temp threshold state changed to {'On' if new_state else 'Off'}")
+        
+        if not new_state:
+            # When turned off, reset to default
+            try:
+                self._dbusservice['/SwitchableOutput/relay_temp_high/Dimming'] = self._default_temp_high_slider
+                self._dbusservice['/SwitchableOutput/relay_temp_high/Measurement'] = self._default_temp_high
+                default_f = self._default_temp_high * 9/5 + 32
+                self._dbusservice['/SwitchableOutput/relay_temp_high/Name'] = f'Hot Limit: {self._default_temp_high:.0f}°C / {default_f:.0f}°F'
+                # Turn it back on automatically after resetting
+                self._dbusservice['/SwitchableOutput/relay_temp_high/State'] = 1
+            except Exception as e:
+                logging.error(f"Failed to reset high temp to default: {e}")
+        return True
+    
+    def _temp_to_slider(self, temp: float) -> float:
+        """Convert temperature (-50 to 100°C) to slider value (1-100)"""
+        # Linear mapping: -50°C -> 1, 100°C -> 100
+        return 1.0 + ((temp - self._temp_min) / (self._temp_max - self._temp_min)) * 99.0
+    
+    def _slider_to_temp(self, slider: float) -> float:
+        """Convert slider value (1-100) to temperature (-50 to 100°C)"""
+        # Linear mapping: 1 -> -50°C, 100 -> 100°C
+        return self._temp_min + ((slider - 1.0) / 99.0) * (self._temp_max - self._temp_min)
+    
+    def _on_temp_low_changed(self, path: str, value):
+        """Handle low temperature threshold changes - value is slider position (1-100)"""
+        slider_value = float(value) if value is not None else 40.4  # Default to 10°C
+        # Convert slider value to actual temperature
+        actual_temp = self._slider_to_temp(slider_value)
+        temp_f = actual_temp * 9/5 + 32
+        logging.info(f"Low temp threshold slider changed to {slider_value:.1f} -> {actual_temp:.1f}°C / {temp_f:.1f}°F")
+        # Update paths to display the value in the UI
+        try:
+            self._dbusservice['/SwitchableOutput/relay_temp_low/Measurement'] = actual_temp
+            # Update Name to show the temperature in both C and F
+            self._dbusservice['/SwitchableOutput/relay_temp_low/Name'] = f'Cold Limit: {actual_temp:.0f}°C / {temp_f:.0f}°F'
+        except Exception as e:
+            logging.error(f"Failed to update low temp measurement: {e}")
+        # Value is automatically persisted by Venus OS
+        # Aggregation will use the new value on next update
+        return True
+    
+    def _on_temp_high_changed(self, path: str, value):
+        """Handle high temperature threshold changes - value is slider position (1-100)"""
+        slider_value = float(value) if value is not None else 57.35  # Default to 35°C
+        # Convert slider value to actual temperature
+        actual_temp = self._slider_to_temp(slider_value)
+        temp_f = actual_temp * 9/5 + 32
+        logging.info(f"High temp threshold slider changed to {slider_value:.1f} -> {actual_temp:.1f}°C / {temp_f:.1f}°F")
+        # Update paths to display the value in the UI
+        try:
+            self._dbusservice['/SwitchableOutput/relay_temp_high/Measurement'] = actual_temp
+            # Update Name to show the temperature in both C and F
+            self._dbusservice['/SwitchableOutput/relay_temp_high/Name'] = f'Hot Limit: {actual_temp:.0f}°C / {temp_f:.0f}°F'
+        except Exception as e:
+            logging.error(f"Failed to update high temp measurement: {e}")
+        # Value is automatically persisted by Venus OS
+        # Aggregation will use the new value on next update
+        return True
+    
+    def _on_discovery_changed(self, path: str, value):
+        """Handle discovery switch state changes - show/hide all shunt switches"""
+        new_enabled = bool(int(value) if isinstance(value, str) else value)
+        
+        logging.info(f"Discovery switch changed: new_enabled={new_enabled}, old={self.discovery_enabled}")
+        
+        if self.discovery_enabled != new_enabled:
+            self.discovery_enabled = new_enabled
+            
+            # Update ShowUIControl for all shunt switches
+            show_value = 1 if new_enabled else 0
+            for service_name, switch_info in self.shunt_switches.items():
+                relay_id = switch_info.get('relay_id')
+                if relay_id:
+                    output_path = f'/SwitchableOutput/relay_{relay_id}/Settings/ShowUIControl'
+                    try:
+                        self._dbusservice[output_path] = show_value
+                        logging.debug(f"Set {output_path} = {show_value}")
+                    except Exception as e:
+                        logging.error(f"Failed to set {output_path}: {e}")
+            
+            # Also hide/show the temperature threshold switches
+            try:
+                self._dbusservice['/SwitchableOutput/relay_temp_low/Settings/ShowUIControl'] = show_value
+                self._dbusservice['/SwitchableOutput/relay_temp_high/Settings/ShowUIControl'] = show_value
+                logging.debug(f"Set temperature threshold switches ShowUIControl = {show_value}")
+            except Exception as e:
+                logging.error(f"Failed to set temperature threshold switches visibility: {e}")
+            
+            # Also hide/show the discovery switch itself when disabled
+            if not new_enabled:
+                try:
+                    self._dbusservice['/SwitchableOutput/relay_0/Settings/ShowUIControl'] = 0
+                    logging.debug("Hidden relay_0 (discovery switch)")
+                except Exception as e:
+                    logging.error(f"Failed to hide relay_0: {e}")
+            
+            logging.info(f"SmartShunt Discovery {'enabled' if new_enabled else 'disabled'} - all switches {'visible' if new_enabled else 'hidden'}")
+        
+        return True
+    
+    def _on_shunt_switch_changed(self, service_name: str, path: str, value):
+        """Handle individual shunt switch state changes - enable/disable from aggregation"""
+        new_enabled = bool(int(value) if isinstance(value, str) else value)
+        
+        if service_name in self.shunt_switches:
+            old_enabled = self.shunt_switches[service_name].get('enabled', True)
+            
+            if old_enabled != new_enabled:
+                self.shunt_switches[service_name]['enabled'] = new_enabled
+                logging.info(f"Shunt switch changed: {service_name} -> {'enabled' if new_enabled else 'disabled'}")
+                
+                # Trigger aggregation update
+                if not self._updating:
+                    self._update_values()
+        
+        return True
+    
+    def _create_shunt_switch(self, service_name: str, custom_name: str):
+        """Create a switch for a discovered SmartShunt"""
+        # Check if switch already exists
+        if service_name in self.shunt_switches:
+            return
+        
+        # Assign relay_id
+        relay_id = self.next_relay_id
+        self.next_relay_id += 1
+        
+        # Store switch info
+        self.shunt_switches[service_name] = {
+            'relay_id': relay_id,
+            'enabled': True,  # Default to enabled
+            'custom_name': custom_name
+        }
+        
+        output_path = f'/SwitchableOutput/relay_{relay_id}'
+        show_ui = 1 if self.discovery_enabled else 0
+        
+        # Create switch paths
+        self._dbusservice.add_path(f'{output_path}/Name', custom_name)
+        self._dbusservice.add_path(f'{output_path}/Type', 1)  # Toggle switch
+        self._dbusservice.add_path(f'{output_path}/State', 1, 
+                                   writeable=True, onchangecallback=lambda p, v: self._on_shunt_switch_changed(service_name, p, v))
+        self._dbusservice.add_path(f'{output_path}/Status', 0x00)
+        self._dbusservice.add_path(f'{output_path}/Current', 0)
+        
+        # Settings - match relay_0 structure
+        self._dbusservice.add_path(f'{output_path}/Settings/CustomName', '', writeable=True)
+        self._dbusservice.add_path(f'{output_path}/Settings/Type', 1, writeable=True)
+        self._dbusservice.add_path(f'{output_path}/Settings/ValidTypes', 2)
+        self._dbusservice.add_path(f'{output_path}/Settings/Function', 2, writeable=True)
+        self._dbusservice.add_path(f'{output_path}/Settings/ValidFunctions', 4)
+        self._dbusservice.add_path(f'{output_path}/Settings/Group', '', writeable=True)
+        self._dbusservice.add_path(f'{output_path}/Settings/ShowUIControl', show_ui, writeable=True)
+        self._dbusservice.add_path(f'{output_path}/Settings/PowerOnState', 1)
+        
+        logging.info(f"Created switch for {custom_name} ({service_name}) at {output_path}, enabled=True")
+    
     def _find_smartshunts(self):
         """Search for SmartShunt services on D-Bus"""
+        # Skip discovery if disabled
+        if not self.discovery_enabled:
+            logging.debug("Discovery disabled, skipping SmartShunt search")
+            GLib.timeout_add_seconds(int(self._device_search_interval), self._find_smartshunts)
+            return False
+        
         logging.info(f"Searching for SmartShunts: Trial #{self._searchTrials}")
         
         found_shunts = []
@@ -440,17 +728,14 @@ class DbusAggregateSmartShunts:
                         device_instance = self._dbusmon.get_value(service, "/DeviceInstance")
                         custom_name = self._dbusmon.get_value(service, "/CustomName")
                         
-                        # Check if this SmartShunt should be excluded
-                        if not self._should_exclude_shunt(device_instance, custom_name):
-                            found_shunts.append({
-                                'service': service,
-                                'instance': device_instance,
-                                'name': custom_name or f"Shunt {device_instance}",
-                                'product': product_name
-                            })
-                            logging.info(f"|- Found: {custom_name} [{device_instance}] - {product_name}")
-                        else:
-                            logging.info(f"|- Excluded: {custom_name} [{device_instance}] - {product_name}")
+                        # Add all SmartShunts (filtering via switches instead of config)
+                        found_shunts.append({
+                            'service': service,
+                            'instance': device_instance,
+                            'name': custom_name or f"Shunt {device_instance}",
+                            'product': product_name
+                        })
+                        logging.info(f"|- Found: {custom_name} [{device_instance}] - {product_name}")
         
         except Exception as e:
             logging.error(f"Error searching for SmartShunts: {e}")
@@ -469,6 +754,12 @@ class DbusAggregateSmartShunts:
                 self._shunts = found_shunts
                 self._last_device_count = len(found_shunts)
                 logging.info(f"✓ Found {len(found_shunts)} SmartShunt(s) to aggregate")
+                
+                # Create switches for newly discovered shunts
+                for shunt in found_shunts:
+                    service_name = shunt['service']
+                    if service_name not in self.shunt_switches:
+                        self._create_shunt_switch(service_name, shunt['name'])
                 
                 # Update /Devices/* paths to show info about aggregated SmartShunts
                 self._update_device_paths(found_shunts)
@@ -511,23 +802,6 @@ class DbusAggregateSmartShunts:
             logging.error(f"Check that SmartShunts are connected and not all excluded")
             tt.sleep(self.config['TIME_BEFORE_RESTART'])
             sys.exit(1)
-    
-    def _should_exclude_shunt(self, device_instance, custom_name):
-        """Check if a SmartShunt should be excluded based on config"""
-        exclude_list = self.config.get('EXCLUDE_SHUNTS')
-        
-        if exclude_list is None or exclude_list == []:
-            # No exclusions - include all
-            return False
-        
-        # Check if instance ID or name matches exclusion list
-        for identifier in exclude_list:
-            if isinstance(identifier, int) and identifier == device_instance:
-                return True
-            if isinstance(identifier, str) and identifier == custom_name:
-                return True
-        
-        return False
     
     def _update_device_paths(self, shunts):
         """
@@ -659,6 +933,12 @@ class DbusAggregateSmartShunts:
         try:
             for shunt in self._shunts:
                 service = shunt['service']
+                
+                # Skip if this shunt's switch is disabled
+                if service in self.shunt_switches:
+                    if not self.shunt_switches[service].get('enabled', True):
+                        logging.debug(f"Skipping disabled shunt: {service}")
+                        continue
                 
                 # Read values
                 voltage = self._dbusmon.get_value(service, "/Dc/0/Voltage")
@@ -837,32 +1117,45 @@ class DbusAggregateSmartShunts:
             max_temp = max(temperature_readings)
             avg_temperature = sum(temperature_readings) / len(temperature_readings)
             
-            # Get thresholds from config
-            COLD_DANGER = self.config['TEMP_COLD_DANGER']
-            HOT_DANGER = self.config['TEMP_HOT_DANGER']
+            # Get thresholds from D-Bus switches (with fallback to stored defaults)
+            # Note: We read from Measurement, not Dimming, because Measurement contains the actual
+            # temperature value after conversion from the slider position
+            try:
+                LOW_TEMP = self._dbusservice['/SwitchableOutput/relay_temp_low/Measurement']
+                if LOW_TEMP is None:
+                    LOW_TEMP = self._default_temp_low
+            except:
+                LOW_TEMP = self._default_temp_low
             
-            # Check if any temp is in danger zone
-            cold_danger = min_temp < COLD_DANGER
-            hot_danger = max_temp > HOT_DANGER
+            try:
+                HIGH_TEMP = self._dbusservice['/SwitchableOutput/relay_temp_high/Measurement']
+                if HIGH_TEMP is None:
+                    HIGH_TEMP = self._default_temp_high
+            except:
+                HIGH_TEMP = self._default_temp_high
             
-            if cold_danger and hot_danger:
-                # Both dangers present - which is closer to critical?
-                # Critical points: 0°C for cold, 45°C for hot
-                cold_severity = abs(min_temp - 0)
-                hot_severity = abs(max_temp - 45)
+            # Check if any temp is outside thresholds
+            low_temp_alert = min_temp < LOW_TEMP
+            high_temp_alert = max_temp > HIGH_TEMP
+            
+            if low_temp_alert and high_temp_alert:
+                # Both alerts present - which is closer to critical?
+                # Critical points: 0°C for low, 45°C for high
+                low_severity = abs(min_temp - 0)
+                high_severity = abs(max_temp - 45)
                 # Use whichever is closer to critical
-                reported_temperature = min_temp if cold_severity < hot_severity else max_temp
-                logging.info(f"Temperature danger detected - Cold: {min_temp:.1f}°C, Hot: {max_temp:.1f}°C, Reporting: {reported_temperature:.1f}°C")
-            elif cold_danger:
-                # Cold is dangerous - report lowest temp
+                reported_temperature = min_temp if low_severity < high_severity else max_temp
+                logging.info(f"Temperature alert detected - Low: {min_temp:.1f}°C, High: {max_temp:.1f}°C, Reporting: {reported_temperature:.1f}°C")
+            elif low_temp_alert:
+                # Low temp - report lowest temp
                 reported_temperature = min_temp
-                logging.info(f"Cold temperature warning - Reporting lowest: {min_temp:.1f}°C (avg: {avg_temperature:.1f}°C)")
-            elif hot_danger:
-                # Heat is dangerous - report highest temp
+                logging.info(f"Low temperature alert - Reporting lowest: {min_temp:.1f}°C (avg: {avg_temperature:.1f}°C)")
+            elif high_temp_alert:
+                # High temp - report highest temp
                 reported_temperature = max_temp
-                logging.info(f"High temperature warning - Reporting highest: {max_temp:.1f}°C (avg: {avg_temperature:.1f}°C)")
+                logging.info(f"High temperature alert - Reporting highest: {max_temp:.1f}°C (avg: {avg_temperature:.1f}°C)")
             else:
-                # All temps in safe range - use average
+                # All temps in normal range - use average
                 reported_temperature = avg_temperature
         else:
             reported_temperature = None
@@ -948,6 +1241,12 @@ class DbusAggregateSmartShunts:
         
         for shunt in self._shunts:
             service = shunt['service']
+            
+            # Skip if this shunt's switch is disabled
+            if service in self.shunt_switches:
+                if not self.shunt_switches[service].get('enabled', True):
+                    continue
+            
             vedirect_hex_checksum.append(self._dbusmon.get_value(service, "/VEDirect/HexChecksumErrors") or 0)
             vedirect_hex_invalid_char.append(self._dbusmon.get_value(service, "/VEDirect/HexInvalidCharacterErrors") or 0)
             vedirect_hex_unfinished.append(self._dbusmon.get_value(service, "/VEDirect/HexUnfinishedErrors") or 0)
@@ -1027,10 +1326,16 @@ class DbusAggregateSmartShunts:
             
             logging.info(f"Status: {voltage:.2f}V, {current:.1f}A, {soc:.1f}% SoC")
             
-            # Log individual shunt values
+            # Log individual shunt values (only enabled ones)
             for shunt in self._shunts:
                 name = shunt['name']
                 service = shunt['service']
+                
+                # Skip if this shunt's switch is disabled
+                if service in self.shunt_switches:
+                    if not self.shunt_switches[service].get('enabled', True):
+                        continue
+                
                 v = self._dbusmon.get_value(service, "/Dc/0/Voltage")
                 i = self._dbusmon.get_value(service, "/Dc/0/Current")
                 s = self._dbusmon.get_value(service, "/Soc")
@@ -1069,10 +1374,10 @@ def main():
         import dbus
         
         bus = dbus.SystemBus()
-        # Get list of SmartShunt services (excluding any in EXCLUDE_SHUNTS)
+        # Get list of SmartShunt services
         shunt_services = []
         for service_name in bus.list_names():
-            if service_name.startswith('com.victronenergy.battery.') and service_name not in settings.EXCLUDE_SHUNTS:
+            if service_name.startswith('com.victronenergy.battery.'):
                 # Check if it's a SmartShunt (ProductId 0xA389)
                 try:
                     obj = bus.get_object(service_name, '/ProductId')
@@ -1160,7 +1465,7 @@ def main():
                 
                 # Note: Monitor mode (Battery Monitor vs DC Energy Meter) is NOT readable via VE.Direct
                 # We assume all SmartShunts on this system are in Battery Monitor mode
-                # If you have DC Energy Meters, manually exclude them via EXCLUDE_SHUNTS in config
+                # If you have DC Energy Meters, disable them via the UI switches after discovery
                 
                 configs.append(config_reader)
                 logging.info(f"    ✓ Added to aggregate")
@@ -1292,13 +1597,11 @@ def main():
         logging.error("Please ensure:")
         logging.error("  1. SmartShunts are connected and powered on")
         logging.error("  2. Capacity is configured in VictronConnect for each SmartShunt")
-        logging.error("  3. SmartShunts are not in the EXCLUDE_SHUNTS list")
         sys.exit(1)
     
     # Create config dict
     config = {
         'DEVICE_NAME': settings.DEVICE_NAME,
-        'EXCLUDE_SHUNTS': settings.EXCLUDE_SHUNTS,
         'TOTAL_CAPACITY': total_capacity,  # Auto-detected
         'FIRMWARE_VERSION': first_shunt_firmware if 'first_shunt_firmware' in locals() and first_shunt_firmware else VERSION,
         'FIRMWARE_VERSION_INT': first_shunt_firmware_int if 'first_shunt_firmware_int' in locals() and first_shunt_firmware_int else None,
@@ -1306,8 +1609,6 @@ def main():
         'PRODUCT_NAME': first_shunt_product_name if 'first_shunt_product_name' in locals() and first_shunt_product_name else None,
         'PRODUCT_ID': first_shunt_product_id if 'first_shunt_product_id' in locals() and first_shunt_product_id else 0xA389,  # Default to SmartShunt
         'MIN_CHARGED_VOLTAGE': min_charged_voltage if 'min_charged_voltage' in locals() else None,
-        'TEMP_COLD_DANGER': settings.TEMP_COLD_DANGER,
-        'TEMP_HOT_DANGER': settings.TEMP_HOT_DANGER,
         'UPDATE_INTERVAL_FIND_DEVICES': settings.UPDATE_INTERVAL_FIND_DEVICES,
         'MAX_UPDATE_INTERVAL_FIND_DEVICES': settings.MAX_UPDATE_INTERVAL_FIND_DEVICES,
         'SEARCH_TRIALS': settings.SEARCH_TRIALS,
@@ -1380,4 +1681,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
