@@ -42,16 +42,22 @@ ln -sf "$INSTALL_DIR/service/log" "$SERVICE_TEMPLATE/log"
 
 # Add to rc.local for autostart on boot
 RC_LOCAL="/data/rc.local"
+RC_ENTRY="ln -sf $INSTALL_DIR/service /service/dbus-aggregate-smartshunts"
+
 if [ ! -f "$RC_LOCAL" ]; then
     echo "#!/bin/bash" > "$RC_LOCAL"
     chmod +x "$RC_LOCAL"
 fi
 
 # Check if already in rc.local
-if ! grep -q "dbus-aggregate-smartshunts/enable.sh" "$RC_LOCAL"; then
+if ! grep -qF "$RC_ENTRY" "$RC_LOCAL"; then
     echo "Adding to rc.local for autostart..."
-    echo "bash $INSTALL_DIR/enable.sh > $INSTALL_DIR/startup.log 2>&1 &" >> "$RC_LOCAL"
+    echo "$RC_ENTRY" >> "$RC_LOCAL"
 fi
+
+# Create service symlink
+echo "Creating service symlink..."
+ln -sf "$INSTALL_DIR/service" /service/dbus-aggregate-smartshunts
 
 # Check if config.ini exists
 if [ ! -f "$INSTALL_DIR/config.ini" ]; then
@@ -67,12 +73,15 @@ echo ""
 echo "Installation complete!"
 echo ""
 echo "Service template created at: $SERVICE_TEMPLATE"
-echo "The service will now autostart on boot."
+echo "The service will start automatically within a few seconds."
 echo ""
-echo "To enable the service now, run:"
-echo "  $INSTALL_DIR/enable.sh"
+echo "Service management commands:"
+echo "  svc -u /service/dbus-aggregate-smartshunts  # Start service"
+echo "  svc -d /service/dbus-aggregate-smartshunts  # Stop service"
+echo "  svc -t /service/dbus-aggregate-smartshunts  # Restart service"
+echo "  svstat /service/dbus-aggregate-smartshunts  # Check status"
 echo ""
-echo "To restart the service after config changes:"
-echo "  $INSTALL_DIR/restart.sh"
+echo "View logs:"
+echo "  tail -f /var/log/dbus-aggregate-smartshunts/current"
 echo ""
 
