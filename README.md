@@ -44,14 +44,8 @@ When you have multiple batteries in parallel, each with their own SmartShunt, th
 
 ### Recommended: One-Line Remote Install
 
-The easiest way to install is directly from GitHub:
-
 ```bash
-# Using curl:
-curl -fsSL https://raw.githubusercontent.com/TechBlueprints/dbus-aggregate-smartshunts/main/install.sh | bash
-
-# Or using wget:
-wget -qO- https://raw.githubusercontent.com/TechBlueprints/dbus-aggregate-smartshunts/main/install.sh | bash
+ssh root@<cerbo-ip> "curl -fsSL https://raw.githubusercontent.com/TechBlueprints/dbus-aggregate-smartshunts/main/install.sh | bash"
 ```
 
 This will:
