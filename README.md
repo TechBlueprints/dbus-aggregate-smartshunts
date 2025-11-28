@@ -42,33 +42,50 @@ When you have multiple batteries in parallel, each with their own SmartShunt, th
 - 2+ SmartShunts connected and visible on D-Bus
 - SSH access to your Venus device
 
-### Quick Install
+### Recommended: One-Line Remote Install
 
-1. **Copy files to your Venus device:**
-   ```bash
-   scp -r dbus-aggregate-smartshunts root@cerbo:/data/apps/
-   ```
+The easiest way to install is directly from GitHub:
 
-2. **SSH to your Venus device:**
+```bash
+# Using curl:
+curl -fsSL https://raw.githubusercontent.com/TechBlueprints/dbus-aggregate-smartshunts/main/install.sh | bash
+
+# Or using wget:
+wget -qO- https://raw.githubusercontent.com/TechBlueprints/dbus-aggregate-smartshunts/main/install.sh | bash
+```
+
+This will:
+- Install `git` if needed
+- Clone or update the repository
+- Install and start the service
+- Survive reboots automatically
+
+### Manual Installation
+
+If you prefer to install manually:
+
+1. **SSH to your Venus device:**
    ```bash
    ssh root@cerbo
    ```
 
-3. **Run the installation script:**
+2. **Clone the repository:**
    ```bash
-   cd /data/apps/dbus-aggregate-smartshunts
-   ./install.sh
+   cd /data/apps
+   git clone https://github.com/TechBlueprints/dbus-aggregate-smartshunts.git
+   cd dbus-aggregate-smartshunts
    ```
 
-4. **Enable the service:**
+3. **Run the service installer:**
    ```bash
-   ./enable.sh
+   bash install-service.sh
    ```
 
 That's it! The service will:
 - Auto-discover all SmartShunts
 - Auto-detect total capacity
 - Start aggregating immediately
+- Persist across reboots
 
 ### Optional Configuration
 
