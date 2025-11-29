@@ -661,7 +661,10 @@ class DbusAggregateSmartShunts:
         return True
     
     def _create_shunt_switch(self, service_name: str, custom_name: str):
-        """Create a switch for a discovered SmartShunt"""
+        """Create a switch for a discovered SmartShunt
+        
+        Uses context manager to emit ItemsChanged signal so GUI picks up new switches.
+        """
         # Check if switch already exists
         if service_name in self.shunt_switches:
             return
@@ -680,23 +683,24 @@ class DbusAggregateSmartShunts:
         output_path = f'/SwitchableOutput/relay_{relay_id}'
         show_ui = 1 if self.discovery_enabled else 0
         
-        # Create switch paths
-        self._dbusservice.add_path(f'{output_path}/Name', custom_name)
-        self._dbusservice.add_path(f'{output_path}/Type', 1)  # Toggle switch
-        self._dbusservice.add_path(f'{output_path}/State', 1, 
-                                   writeable=True, onchangecallback=lambda p, v: self._on_shunt_switch_changed(service_name, p, v))
-        self._dbusservice.add_path(f'{output_path}/Status', 0x00)
-        self._dbusservice.add_path(f'{output_path}/Current', 0)
-        
-        # Settings - match relay_0 structure
-        self._dbusservice.add_path(f'{output_path}/Settings/CustomName', '', writeable=True)
-        self._dbusservice.add_path(f'{output_path}/Settings/Type', 1, writeable=True)
-        self._dbusservice.add_path(f'{output_path}/Settings/ValidTypes', 2)
-        self._dbusservice.add_path(f'{output_path}/Settings/Function', 2, writeable=True)
-        self._dbusservice.add_path(f'{output_path}/Settings/ValidFunctions', 4)
-        self._dbusservice.add_path(f'{output_path}/Settings/Group', '', writeable=True)
-        self._dbusservice.add_path(f'{output_path}/Settings/ShowUIControl', show_ui, writeable=True)
-        self._dbusservice.add_path(f'{output_path}/Settings/PowerOnState', 1)
+        # Create switch paths using context manager to emit ItemsChanged signal
+        with self._dbusservice as ctx:
+            ctx.add_path(f'{output_path}/Name', custom_name)
+            ctx.add_path(f'{output_path}/Type', 1)  # Toggle switch
+            ctx.add_path(f'{output_path}/State', 1, 
+                         writeable=True, onchangecallback=lambda p, v: self._on_shunt_switch_changed(service_name, p, v))
+            ctx.add_path(f'{output_path}/Status', 0x00)
+            ctx.add_path(f'{output_path}/Current', 0)
+            
+            # Settings - match relay_0 structure
+            ctx.add_path(f'{output_path}/Settings/CustomName', '', writeable=True)
+            ctx.add_path(f'{output_path}/Settings/Type', 1, writeable=True)
+            ctx.add_path(f'{output_path}/Settings/ValidTypes', 2)
+            ctx.add_path(f'{output_path}/Settings/Function', 2, writeable=True)
+            ctx.add_path(f'{output_path}/Settings/ValidFunctions', 4)
+            ctx.add_path(f'{output_path}/Settings/Group', '', writeable=True)
+            ctx.add_path(f'{output_path}/Settings/ShowUIControl', show_ui, writeable=True)
+            ctx.add_path(f'{output_path}/Settings/PowerOnState', 1)
         
         logging.info(f"Created switch for {custom_name} ({service_name}) at {output_path}, enabled=True")
     
