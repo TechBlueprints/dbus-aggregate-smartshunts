@@ -742,7 +742,7 @@ class DbusAggregateSmartShunts:
         """Get shunt enabled state from settings"""
         try:
             key = self._get_shunt_setting_key(service_name)
-            settings_path = f"/Settings/Devices/aggregateshunts/Shunt_{key}"
+            settings_path = f"/Settings/Devices/aggregateshunts/shunt_{key}"
             settings_obj = self._dbusConn.get_object('com.victronenergy.settings', settings_path)
             settings_iface = dbus.Interface(settings_obj, 'com.victronenergy.BusItem')
             value = settings_iface.GetValue()
@@ -755,14 +755,14 @@ class DbusAggregateSmartShunts:
         """Save shunt enabled state to settings"""
         try:
             key = self._get_shunt_setting_key(service_name)
-            settings_path = f"/Settings/Devices/aggregateshunts/Shunt_{key}"
+            settings_path = f"/Settings/Devices/aggregateshunts/shunt_{key}"
             
             settings_obj = self._dbusConn.get_object('com.victronenergy.settings', '/Settings')
             settings_iface = dbus.Interface(settings_obj, 'com.victronenergy.Settings')
             # AddSetting(group, name, default, type, min, max)
             settings_iface.AddSetting(
                 'Devices/aggregateshunts',
-                f'Shunt_{key}',
+                f'shunt_{key}',
                 1,  # Default: enabled
                 'i',  # integer
                 0,
