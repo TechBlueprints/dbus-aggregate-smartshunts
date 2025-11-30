@@ -425,6 +425,12 @@ class DbusAggregateSmartShunts:
                     0,
                     0,
                 ],
+                "DiscoveryEnabled": [
+                    f"{settings_path}/DiscoveryEnabled",
+                    1,  # Default: ON
+                    0,
+                    1,
+                ],
             }
             
             # Initialize SettingsDevice (will create the settings if they don't exist)
@@ -436,6 +442,15 @@ class DbusAggregateSmartShunts:
             )
             
             logging.info(f"Registered device settings: {settings_path}/ClassAndVrmInstance = {class_and_vrm_instance}")
+            
+            # Restore discovery state from saved settings
+            discovery_state = self._settings['DiscoveryEnabled']
+            self._dbusservice['/SwitchableOutput/relay_discovery/State'] = discovery_state
+            self.discovery_enabled = bool(discovery_state)
+            if discovery_state:
+                logging.info("Discovery enabled from saved settings")
+            else:
+                logging.info("Discovery disabled from saved settings")
             
         except Exception as e:
             logging.error(f"Failed to register device settings: {e}")
@@ -607,6 +622,10 @@ class DbusAggregateSmartShunts:
         new_enabled = bool(int(value) if isinstance(value, str) else value)
         
         logging.info(f"Discovery switch changed: new_enabled={new_enabled}, old={self.discovery_enabled}")
+        
+        # Save to persistent settings
+        if hasattr(self, '_settings') and self._settings:
+            self._settings['DiscoveryEnabled'] = 1 if new_enabled else 0
         
         if self.discovery_enabled != new_enabled:
             self.discovery_enabled = new_enabled
