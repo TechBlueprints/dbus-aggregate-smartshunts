@@ -67,8 +67,7 @@ class DbusAggregateSmartShunts:
         
         # Switch management for discovered shunts
         self.discovery_enabled = True  # Default to enabled (may be overridden below)
-        self.shunt_switches = {}  # Maps service_name -> {'relay_id': int, 'enabled': bool}
-        self.next_relay_id = 1  # Start at 1 (relay_0 is discovery switch)
+        self.shunt_switches = {}  # Maps service_name -> {'relay_id': str, 'enabled': bool}
         
         # Early load of discovery setting (before switches are created)
         # This ensures discovery_enabled is correct before _find_smartshunts runs
@@ -776,6 +775,21 @@ class DbusAggregateSmartShunts:
         except Exception as e:
             logging.error(f"Failed to save shunt setting: {e}")
     
+    def _get_relay_id_from_service(self, service_name: str) -> str:
+        """Generate a stable relay ID from service name.
+        
+        Examples:
+            com.victronenergy.battery.ttyS5 -> shunt_ttyS5
+            com.victronenergy.battery.ttyS6 -> shunt_ttyS6
+        """
+        # Extract the last part of the service name (e.g., ttyS5)
+        parts = service_name.split('.')
+        if len(parts) >= 4:
+            port = parts[3]  # e.g., ttyS5
+            return f"shunt_{port}"
+        # Fallback: use sanitized service name
+        return f"shunt_{service_name.replace('.', '_').replace('com_victronenergy_battery_', '')}"
+    
     def _create_shunt_switch(self, service_name: str, custom_name: str):
         """Create a switch for a discovered SmartShunt
         
@@ -785,9 +799,8 @@ class DbusAggregateSmartShunts:
         if service_name in self.shunt_switches:
             return
         
-        # Assign relay_id
-        relay_id = self.next_relay_id
-        self.next_relay_id += 1
+        # Generate stable relay_id from service name (e.g., shunt_ttyS5)
+        relay_id = self._get_relay_id_from_service(service_name)
         
         # Check settings for persisted enabled state
         persisted_enabled = self._get_shunt_enabled_setting(service_name)
