@@ -665,6 +665,8 @@ class DbusAggregateSmartShunts:
             
             if old_enabled != new_enabled:
                 self.shunt_switches[service_name]['enabled'] = new_enabled
+                # Save to settings
+                self._set_shunt_enabled_setting(service_name, new_enabled)
                 logging.info(f"Shunt switch changed: {service_name} -> {'enabled' if new_enabled else 'disabled'}")
                 
                 # Trigger aggregation update
@@ -672,6 +674,54 @@ class DbusAggregateSmartShunts:
                     self._update_values()
         
         return True
+    
+    def _get_shunt_setting_key(self, service_name: str) -> str:
+        """Convert service name to a valid settings key"""
+        # e.g., com.victronenergy.battery.ttyS6 -> battery_ttyS6
+        parts = service_name.split('.')
+        if len(parts) >= 4:
+            return f"{parts[2]}_{parts[3]}"
+        return service_name.replace('.', '_')
+    
+    def _get_shunt_enabled_setting(self, service_name: str) -> bool:
+        """Get shunt enabled state from settings"""
+        try:
+            key = self._get_shunt_setting_key(service_name)
+            settings_path = f"/Settings/Devices/aggregateshunts/Shunt_{key}"
+            settings_obj = self._dbusConn.get_object('com.victronenergy.settings', settings_path)
+            settings_iface = dbus.Interface(settings_obj, 'com.victronenergy.BusItem')
+            value = settings_iface.GetValue()
+            return bool(value)
+        except:
+            # Setting doesn't exist yet - default to enabled
+            return None
+    
+    def _set_shunt_enabled_setting(self, service_name: str, enabled: bool):
+        """Save shunt enabled state to settings"""
+        try:
+            key = self._get_shunt_setting_key(service_name)
+            settings_path = f"/Settings/Devices/aggregateshunts/Shunt_{key}"
+            
+            settings_obj = self._dbusConn.get_object('com.victronenergy.settings', '/Settings')
+            settings_iface = dbus.Interface(settings_obj, 'com.victronenergy.Settings')
+            # AddSetting(group, name, default, type, min, max)
+            settings_iface.AddSetting(
+                'Devices/aggregateshunts',
+                f'Shunt_{key}',
+                1,  # Default: enabled
+                'i',  # integer
+                0,
+                1
+            )
+            
+            # Now set the actual value
+            shunt_obj = self._dbusConn.get_object('com.victronenergy.settings', settings_path)
+            shunt_iface = dbus.Interface(shunt_obj, 'com.victronenergy.BusItem')
+            shunt_iface.SetValue(1 if enabled else 0)
+            
+            logging.debug(f"Saved shunt {service_name} enabled={enabled} to settings")
+        except Exception as e:
+            logging.error(f"Failed to save shunt setting: {e}")
     
     def _create_shunt_switch(self, service_name: str, custom_name: str):
         """Create a switch for a discovered SmartShunt
@@ -686,12 +736,19 @@ class DbusAggregateSmartShunts:
         relay_id = self.next_relay_id
         self.next_relay_id += 1
         
+        # Check settings for persisted enabled state
+        persisted_enabled = self._get_shunt_enabled_setting(service_name)
+        enabled = persisted_enabled if persisted_enabled is not None else True
+        
         # Store switch info
         self.shunt_switches[service_name] = {
             'relay_id': relay_id,
-            'enabled': True,  # Default to enabled
+            'enabled': enabled,
             'custom_name': custom_name
         }
+        
+        # Save to settings (creates setting if needed)
+        self._set_shunt_enabled_setting(service_name, enabled)
         
         output_path = f'/SwitchableOutput/relay_{relay_id}'
         show_ui = 1 if self.discovery_enabled else 0
@@ -700,7 +757,7 @@ class DbusAggregateSmartShunts:
         with self._dbusservice as ctx:
             ctx.add_path(f'{output_path}/Name', custom_name)
             ctx.add_path(f'{output_path}/Type', 1)  # Toggle switch
-            ctx.add_path(f'{output_path}/State', 1, 
+            ctx.add_path(f'{output_path}/State', 1 if enabled else 0, 
                          writeable=True, onchangecallback=lambda p, v: self._on_shunt_switch_changed(service_name, p, v))
             ctx.add_path(f'{output_path}/Status', 0x00)
             ctx.add_path(f'{output_path}/Current', 0)
@@ -713,9 +770,9 @@ class DbusAggregateSmartShunts:
             ctx.add_path(f'{output_path}/Settings/ValidFunctions', 4)
             ctx.add_path(f'{output_path}/Settings/Group', '', writeable=True)
             ctx.add_path(f'{output_path}/Settings/ShowUIControl', show_ui, writeable=True)
-            ctx.add_path(f'{output_path}/Settings/PowerOnState', 1)
+            ctx.add_path(f'{output_path}/Settings/PowerOnState', 1 if enabled else 0)
         
-        logging.info(f"Created switch for {custom_name} ({service_name}) at {output_path}, enabled=True")
+        logging.info(f"Created switch for {custom_name} ({service_name}) at {output_path}, enabled={enabled}")
     
     def _find_smartshunts(self):
         """Search for SmartShunt services on D-Bus"""
