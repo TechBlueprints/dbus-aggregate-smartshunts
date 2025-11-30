@@ -728,11 +728,14 @@ class DbusAggregateSmartShunts:
         return True
     
     def _get_shunt_setting_key(self, service_name: str) -> str:
-        """Convert service name to a valid settings key"""
-        # e.g., com.victronenergy.battery.ttyS6 -> battery_ttyS6
+        """Convert service name to a valid settings key.
+        
+        Uses just the port name to match relay ID format.
+        e.g., com.victronenergy.battery.ttyS6 -> ttyS6
+        """
         parts = service_name.split('.')
         if len(parts) >= 4:
-            return f"{parts[2]}_{parts[3]}"
+            return parts[3]  # Just the port, e.g., ttyS6
         return service_name.replace('.', '_')
     
     def _get_shunt_enabled_setting(self, service_name: str) -> bool:
