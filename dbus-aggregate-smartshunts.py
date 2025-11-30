@@ -290,15 +290,16 @@ class DbusAggregateSmartShunts:
         self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Settings/PowerOnState', 1)
         
         # Add temperature threshold switches (using reserved relay IDs)
-        # Defaults: 50°F (10°C) for cold limit, 105°F (40.5°C) for hot limit
+        # Defaults: 50°F (10°C) for cold limit, 105°F (41°C) for hot limit
         # Note: GUI slider is hardcoded 1-100, so we map slider values to actual temperature range:
-        # - Both sliders: 1-100 maps to -50°C to 100°C (150°C range, ~1.5°C per slider step)
+        # - Both sliders: 1-100 maps to 0°C to 99°C (99°C range = exactly 1°C per slider step)
         DEFAULT_TEMP_LOW = 10.0   # 50°F / 10°C
-        DEFAULT_TEMP_HIGH = 40.5  # 105°F / 40.5°C
+        DEFAULT_TEMP_HIGH = 41.0  # ~106°F / 41°C (rounded to integer for 1°C granularity)
         
         # Temperature range constants (both sliders use same range)
-        TEMP_MIN = -50.0   # Minimum temperature threshold
-        TEMP_MAX = 100.0   # Maximum temperature threshold
+        # Using 0-99°C gives exactly 1°C per slider step (slider 1=0°C, slider 100=99°C)
+        TEMP_MIN = 0.0     # Minimum temperature threshold
+        TEMP_MAX = 99.0    # Maximum temperature threshold
         
         # Store temperature range constants as instance variables
         self._temp_min = TEMP_MIN
@@ -331,10 +332,10 @@ class DbusAggregateSmartShunts:
         self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/ValidFunctions', 4)  # Bit 2 = Manual only
         self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/Group', '', writeable=True)
         self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/PowerOnState', 1)
-        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/DimmingMin', 0.0)  # 0°C min
-        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/DimmingMax', 50.0)   # 50°C max
-        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/StepSize', 0.5)
-        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/Decimals', 1)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/DimmingMin', 1.0)   # Slider min (= 0°C)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/DimmingMax', 100.0) # Slider max (= 99°C)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/StepSize', 1.0)    # 1°C per step
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/Decimals', 0)      # Integer degrees
         self._dbusservice.add_path('/SwitchableOutput/relay_temp_low/Settings/ShowUIControl', 1, writeable=True)
         
         # High temp threshold (relay_temp_high)
@@ -360,10 +361,10 @@ class DbusAggregateSmartShunts:
         self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/ValidFunctions', 4)  # Bit 2 = Manual only
         self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/Group', '', writeable=True)
         self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/PowerOnState', 1)
-        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/DimmingMin', 0.0)   # 0°C min
-        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/DimmingMax', 50.0)   # 50°C max
-        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/StepSize', 0.5)
-        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/Decimals', 1)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/DimmingMin', 1.0)   # Slider min (= 0°C)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/DimmingMax', 100.0) # Slider max (= 99°C)
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/StepSize', 1.0)    # 1°C per step
+        self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/Decimals', 0)      # Integer degrees
         self._dbusservice.add_path('/SwitchableOutput/relay_temp_high/Settings/ShowUIControl', 1, writeable=True)
         
         # Store defaults for fallback use in aggregation
@@ -622,18 +623,26 @@ class DbusAggregateSmartShunts:
         return True
     
     def _temp_to_slider(self, temp: float) -> float:
-        """Convert temperature (-50 to 100°C) to slider value (1-100)"""
-        # Linear mapping: -50°C -> 1, 100°C -> 100
+        """Convert temperature (0 to 99°C) to slider value (1-100)
+        
+        With 0-99°C range, each slider step = exactly 1°C:
+        slider 1 = 0°C, slider 2 = 1°C, ..., slider 100 = 99°C
+        """
+        # Linear mapping: 0°C -> 1, 99°C -> 100
         return 1.0 + ((temp - self._temp_min) / (self._temp_max - self._temp_min)) * 99.0
     
     def _slider_to_temp(self, slider: float) -> float:
-        """Convert slider value (1-100) to temperature (-50 to 100°C)"""
-        # Linear mapping: 1 -> -50°C, 100 -> 100°C
+        """Convert slider value (1-100) to temperature (0 to 99°C)
+        
+        With 0-99°C range, each slider step = exactly 1°C:
+        slider 1 = 0°C, slider 2 = 1°C, ..., slider 100 = 99°C
+        """
+        # Linear mapping: 1 -> 0°C, 100 -> 99°C
         return self._temp_min + ((slider - 1.0) / 99.0) * (self._temp_max - self._temp_min)
     
     def _on_temp_low_changed(self, path: str, value):
         """Handle low temperature threshold changes - value is slider position (1-100)"""
-        slider_value = float(value) if value is not None else 40.4  # Default to 10°C
+        slider_value = float(value) if value is not None else 11  # Default to 10°C (slider 11 = 10°C)
         # Convert slider value to actual temperature
         actual_temp = self._slider_to_temp(slider_value)
         temp_f = actual_temp * 9/5 + 32
@@ -652,7 +661,7 @@ class DbusAggregateSmartShunts:
     
     def _on_temp_high_changed(self, path: str, value):
         """Handle high temperature threshold changes - value is slider position (1-100)"""
-        slider_value = float(value) if value is not None else 57.35  # Default to 35°C
+        slider_value = float(value) if value is not None else 42  # Default to 41°C (slider 42 = 41°C)
         # Convert slider value to actual temperature
         actual_temp = self._slider_to_temp(slider_value)
         temp_f = actual_temp * 9/5 + 32
