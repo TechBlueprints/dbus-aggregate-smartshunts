@@ -873,6 +873,7 @@ class DbusAggregateSmartShunts:
             self._devices_stable_since = None
         
         # Check if we found any SmartShunts
+        logging.debug(f"found_shunts={len(found_shunts)}, self._shunts={len(self._shunts)}, last_count={self._last_device_count}")
         if len(found_shunts) > 0:
             # Check if this is initial discovery or device count changed
             if not self._shunts or len(found_shunts) != self._last_device_count:
