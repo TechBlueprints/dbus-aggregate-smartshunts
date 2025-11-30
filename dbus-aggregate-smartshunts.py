@@ -361,9 +361,7 @@ class DbusAggregateSmartShunts:
         # Don't register yet - wait until main loop is ready
         # This prevents D-Bus timeout issues when DbusMonitor tries to call GetItems
         # before the main loop is running
-        
-        # Start searching for SmartShunts
-        GLib.timeout_add_seconds(self.config['UPDATE_INTERVAL_FIND_DEVICES'], self._find_smartshunts)
+        # Note: SmartShunt discovery timer is started in register() after settings are loaded
     
     def register(self):
         """Register the D-Bus service and device settings.
@@ -375,7 +373,12 @@ class DbusAggregateSmartShunts:
         self._dbusservice.register()
         
         # Register device in settings (for GUI device list)
+        # This also restores discovery_enabled state from saved settings
         self._register_device_settings(self._device_instance)
+        
+        # Start searching for SmartShunts AFTER settings are loaded
+        # This ensures discovery_enabled state is correct before first search
+        GLib.timeout_add_seconds(self.config['UPDATE_INTERVAL_FIND_DEVICES'], self._find_smartshunts)
         
         logging.info("Service registered and ready")
     
