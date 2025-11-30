@@ -828,13 +828,11 @@ class DbusAggregateSmartShunts:
         logging.info(f"Created switch for {custom_name} ({service_name}) at {output_path}, enabled={enabled}")
     
     def _find_smartshunts(self):
-        """Search for SmartShunt services on D-Bus"""
-        # Skip discovery if disabled
-        if not self.discovery_enabled:
-            logging.debug("Discovery disabled, skipping SmartShunt search")
-            GLib.timeout_add_seconds(int(self._device_search_interval), self._find_smartshunts)
-            return False
+        """Search for SmartShunt services on D-Bus
         
+        Note: Discovery controls whether NEW switches are created, not whether we find/aggregate.
+        We always search for SmartShunts, but only create switches for new ones when discovery is enabled.
+        """
         logging.info(f"Searching for SmartShunts: Trial #{self._searchTrials}")
         
         found_shunts = []
@@ -886,7 +884,19 @@ class DbusAggregateSmartShunts:
                 for shunt in found_shunts:
                     service_name = shunt['service']
                     if service_name not in self.shunt_switches:
-                        self._create_shunt_switch(service_name, shunt['name'])
+                        # Check if this shunt has a persisted enabled setting
+                        persisted = self._get_shunt_enabled_setting(service_name)
+                        
+                        if self.discovery_enabled:
+                            # Discovery enabled: create visible switch
+                            self._create_shunt_switch(service_name, shunt['name'])
+                        elif persisted is not None:
+                            # Discovery disabled but has persisted setting: create hidden switch
+                            self._create_shunt_switch(service_name, shunt['name'])
+                            logging.info(f"Restored switch for {shunt['name']} (discovery disabled)")
+                        else:
+                            # Discovery disabled and no persisted setting: skip
+                            logging.debug(f"Discovery disabled, skipping new shunt {shunt['name']}")
                 
                 # Update /Devices/* paths to show info about aggregated SmartShunts
                 self._update_device_paths(found_shunts)
