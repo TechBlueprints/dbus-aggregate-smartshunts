@@ -4,7 +4,6 @@
 # 
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/TechBlueprints/dbus-aggregate-smartshunts/main/install.sh | bash
-#   wget -qO- https://raw.githubusercontent.com/TechBlueprints/dbus-aggregate-smartshunts/main/install.sh | bash
 #
 
 set -e
