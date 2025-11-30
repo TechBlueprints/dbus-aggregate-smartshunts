@@ -261,21 +261,21 @@ class DbusAggregateSmartShunts:
         # Store device_instance for later registration
         self._device_instance = device_instance
         
-        # Add master discovery switch (relay_0)
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/Name', '* SmartShunt Discovery')
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/Type', 1)  # Toggle switch
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/State', 1, 
+        # Add master discovery switch (relay_discovery)
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Name', '* SmartShunt Discovery')
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Type', 1)  # Toggle switch
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/State', 1, 
                                    writeable=True, onchangecallback=self._on_discovery_changed)
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/Status', 0x00)
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/Current', 0)
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/CustomName', '', writeable=True)
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/Type', 1, writeable=True)
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/ValidTypes', 2)
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/Function', 2, writeable=True)
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/ValidFunctions', 4)
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/Group', '', writeable=True)
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/ShowUIControl', 1, writeable=True)
-        self._dbusservice.add_path('/SwitchableOutput/relay_0/Settings/PowerOnState', 1)
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Status', 0x00)
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Current', 0)
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Settings/CustomName', '', writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Settings/Type', 1, writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Settings/ValidTypes', 2)
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Settings/Function', 2, writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Settings/ValidFunctions', 4)
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Settings/Group', '', writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Settings/ShowUIControl', 1, writeable=True)
+        self._dbusservice.add_path('/SwitchableOutput/relay_discovery/Settings/PowerOnState', 1)
         
         # Add temperature threshold switches (using reserved relay IDs)
         # Defaults: 50°F (10°C) for cold limit, 105°F (40.5°C) for hot limit
@@ -631,13 +631,7 @@ class DbusAggregateSmartShunts:
             except Exception as e:
                 logging.error(f"Failed to set temperature threshold switches visibility: {e}")
             
-            # Also hide/show the discovery switch itself when disabled
-            if not new_enabled:
-                try:
-                    self._dbusservice['/SwitchableOutput/relay_0/Settings/ShowUIControl'] = 0
-                    logging.debug("Hidden relay_0 (discovery switch)")
-                except Exception as e:
-                    logging.error(f"Failed to hide relay_0: {e}")
+            # Note: Discovery switch (relay_0) is NEVER hidden - users need it to re-enable discovery
             
             logging.info(f"SmartShunt Discovery {'enabled' if new_enabled else 'disabled'} - all switches {'visible' if new_enabled else 'hidden'}")
         
