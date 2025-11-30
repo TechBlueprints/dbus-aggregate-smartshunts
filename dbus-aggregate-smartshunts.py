@@ -592,16 +592,22 @@ class DbusAggregateSmartShunts:
         logging.info(f"Low temp threshold state changed to {'On' if new_state else 'Off'}")
         
         if not new_state:
-            # When turned off, reset to default
-            try:
-                self._dbusservice['/SwitchableOutput/relay_temp_low/Dimming'] = self._default_temp_low_slider
-                self._dbusservice['/SwitchableOutput/relay_temp_low/Measurement'] = self._default_temp_low
-                default_f = self._default_temp_low * 9/5 + 32
-                self._dbusservice['/SwitchableOutput/relay_temp_low/Name'] = f'Cold Limit: {self._default_temp_low:.0f}°C / {default_f:.0f}°F'
-                # Turn it back on automatically after resetting
-                self._dbusservice['/SwitchableOutput/relay_temp_low/State'] = 1
-            except Exception as e:
-                logging.error(f"Failed to reset low temp to default: {e}")
+            # When turned off, reset to default and turn back on
+            # Use timeout_add with 500ms delay to let the UI settle before resetting
+            def reset_to_default():
+                try:
+                    self._dbusservice['/SwitchableOutput/relay_temp_low/Dimming'] = self._default_temp_low_slider
+                    self._dbusservice['/SwitchableOutput/relay_temp_low/Measurement'] = self._default_temp_low
+                    default_f = self._default_temp_low * 9/5 + 32
+                    self._dbusservice['/SwitchableOutput/relay_temp_low/Name'] = f'Cold Limit: {self._default_temp_low:.0f}°C / {default_f:.0f}°F'
+                    # Turn it back on automatically after resetting
+                    self._dbusservice['/SwitchableOutput/relay_temp_low/State'] = 1
+                    logging.info(f"Reset Cold Limit to default ({self._default_temp_low:.0f}°C)")
+                except Exception as e:
+                    logging.error(f"Failed to reset low temp to default: {e}")
+                return False  # Don't repeat
+            
+            GLib.timeout_add(500, reset_to_default)  # 500ms delay
         return True
     
     def _on_temp_high_state_changed(self, path: str, value):
@@ -610,16 +616,22 @@ class DbusAggregateSmartShunts:
         logging.info(f"High temp threshold state changed to {'On' if new_state else 'Off'}")
         
         if not new_state:
-            # When turned off, reset to default
-            try:
-                self._dbusservice['/SwitchableOutput/relay_temp_high/Dimming'] = self._default_temp_high_slider
-                self._dbusservice['/SwitchableOutput/relay_temp_high/Measurement'] = self._default_temp_high
-                default_f = self._default_temp_high * 9/5 + 32
-                self._dbusservice['/SwitchableOutput/relay_temp_high/Name'] = f'Hot Limit: {self._default_temp_high:.0f}°C / {default_f:.0f}°F'
-                # Turn it back on automatically after resetting
-                self._dbusservice['/SwitchableOutput/relay_temp_high/State'] = 1
-            except Exception as e:
-                logging.error(f"Failed to reset high temp to default: {e}")
+            # When turned off, reset to default and turn back on
+            # Use timeout_add with 500ms delay to let the UI settle before resetting
+            def reset_to_default():
+                try:
+                    self._dbusservice['/SwitchableOutput/relay_temp_high/Dimming'] = self._default_temp_high_slider
+                    self._dbusservice['/SwitchableOutput/relay_temp_high/Measurement'] = self._default_temp_high
+                    default_f = self._default_temp_high * 9/5 + 32
+                    self._dbusservice['/SwitchableOutput/relay_temp_high/Name'] = f'Hot Limit: {self._default_temp_high:.0f}°C / {default_f:.0f}°F'
+                    # Turn it back on automatically after resetting
+                    self._dbusservice['/SwitchableOutput/relay_temp_high/State'] = 1
+                    logging.info(f"Reset Hot Limit to default ({self._default_temp_high:.0f}°C)")
+                except Exception as e:
+                    logging.error(f"Failed to reset high temp to default: {e}")
+                return False  # Don't repeat
+            
+            GLib.timeout_add(500, reset_to_default)  # 500ms delay
         return True
     
     def _temp_to_slider_low(self, temp: float) -> float:
