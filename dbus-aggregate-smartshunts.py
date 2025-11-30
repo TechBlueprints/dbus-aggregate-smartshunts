@@ -66,9 +66,22 @@ class DbusAggregateSmartShunts:
         self._ttg_divergence_logged = False
         
         # Switch management for discovered shunts
-        self.discovery_enabled = True  # Default to enabled
+        self.discovery_enabled = True  # Default to enabled (may be overridden below)
         self.shunt_switches = {}  # Maps service_name -> {'relay_id': int, 'enabled': bool}
         self.next_relay_id = 1  # Start at 1 (relay_0 is discovery switch)
+        
+        # Early load of discovery setting (before switches are created)
+        # This ensures discovery_enabled is correct before _find_smartshunts runs
+        try:
+            settings_obj = self._dbusConn.get_object('com.victronenergy.settings', 
+                '/Settings/Devices/aggregateshunts_AGGREGATE01/DiscoveryEnabled')
+            settings_iface = dbus.Interface(settings_obj, 'com.victronenergy.BusItem')
+            saved_discovery = settings_iface.GetValue()
+            if saved_discovery is not None:
+                self.discovery_enabled = bool(saved_discovery)
+                logging.info(f"Early load: discovery_enabled = {self.discovery_enabled}")
+        except Exception as e:
+            logging.debug(f"No saved discovery setting found (fresh install): {e}")
         
         logging.info("### Initializing VeDbusService")
         self._dbusservice = VeDbusService(servicename, self._dbusConn, register=False)
