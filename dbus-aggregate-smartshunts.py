@@ -431,6 +431,18 @@ class DbusAggregateSmartShunts:
                     0,
                     1,
                 ],
+                "TempLowSlider": [
+                    f"{settings_path}/TempLowSlider",
+                    self._default_temp_low_slider,  # Default slider position
+                    1,  # Min
+                    100,  # Max
+                ],
+                "TempHighSlider": [
+                    f"{settings_path}/TempHighSlider",
+                    self._default_temp_high_slider,  # Default slider position
+                    1,  # Min
+                    100,  # Max
+                ],
             }
             
             # Initialize SettingsDevice (will create the settings if they don't exist)
@@ -451,6 +463,29 @@ class DbusAggregateSmartShunts:
                 logging.info("Discovery enabled from saved settings")
             else:
                 logging.info("Discovery disabled from saved settings")
+                # Hide temperature threshold switches when discovery is disabled
+                self._dbusservice['/SwitchableOutput/relay_temp_low/Settings/ShowUIControl'] = 0
+                self._dbusservice['/SwitchableOutput/relay_temp_high/Settings/ShowUIControl'] = 0
+            
+            # Restore temperature slider values from saved settings
+            saved_low_slider = self._settings['TempLowSlider']
+            saved_high_slider = self._settings['TempHighSlider']
+            
+            if saved_low_slider != self._default_temp_low_slider:
+                self._dbusservice['/SwitchableOutput/relay_temp_low/Dimming'] = saved_low_slider
+                actual_temp = self._slider_to_temp(saved_low_slider)
+                temp_f = actual_temp * 9/5 + 32
+                self._dbusservice['/SwitchableOutput/relay_temp_low/Name'] = f'Cold Limit: {actual_temp:.0f}°C / {temp_f:.0f}°F'
+                self._dbusservice['/SwitchableOutput/relay_temp_low/Measurement'] = actual_temp
+                logging.info(f"Restored cold limit: {actual_temp:.1f}°C from slider {saved_low_slider}")
+            
+            if saved_high_slider != self._default_temp_high_slider:
+                self._dbusservice['/SwitchableOutput/relay_temp_high/Dimming'] = saved_high_slider
+                actual_temp = self._slider_to_temp(saved_high_slider)
+                temp_f = actual_temp * 9/5 + 32
+                self._dbusservice['/SwitchableOutput/relay_temp_high/Name'] = f'Hot Limit: {actual_temp:.0f}°C / {temp_f:.0f}°F'
+                self._dbusservice['/SwitchableOutput/relay_temp_high/Measurement'] = actual_temp
+                logging.info(f"Restored hot limit: {actual_temp:.1f}°C from slider {saved_high_slider}")
             
         except Exception as e:
             logging.error(f"Failed to register device settings: {e}")
@@ -595,8 +630,9 @@ class DbusAggregateSmartShunts:
             self._dbusservice['/SwitchableOutput/relay_temp_low/Name'] = f'Cold Limit: {actual_temp:.0f}°C / {temp_f:.0f}°F'
         except Exception as e:
             logging.error(f"Failed to update low temp measurement: {e}")
-        # Value is automatically persisted by Venus OS
-        # Aggregation will use the new value on next update
+        # Save to persistent settings
+        if hasattr(self, '_settings') and self._settings:
+            self._settings['TempLowSlider'] = int(slider_value)
         return True
     
     def _on_temp_high_changed(self, path: str, value):
@@ -613,8 +649,9 @@ class DbusAggregateSmartShunts:
             self._dbusservice['/SwitchableOutput/relay_temp_high/Name'] = f'Hot Limit: {actual_temp:.0f}°C / {temp_f:.0f}°F'
         except Exception as e:
             logging.error(f"Failed to update high temp measurement: {e}")
-        # Value is automatically persisted by Venus OS
-        # Aggregation will use the new value on next update
+        # Save to persistent settings
+        if hasattr(self, '_settings') and self._settings:
+            self._settings['TempHighSlider'] = int(slider_value)
         return True
     
     def _on_discovery_changed(self, path: str, value):
