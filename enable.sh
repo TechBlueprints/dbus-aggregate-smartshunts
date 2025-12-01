@@ -1,35 +1,31 @@
 #!/bin/bash
+#
+# Enable script for dbus-aggregate-smartshunts
+# This script is run on every boot via rc.local to ensure the service is properly set up
+#
 
-# Enable dbus-aggregate-smartshunts service on Venus OS
+# Fix permissions
+chmod +x /data/apps/dbus-aggregate-smartshunts/*.py
+chmod +x /data/apps/dbus-aggregate-smartshunts/service/run
+chmod +x /data/apps/dbus-aggregate-smartshunts/service/log/run
 
-SERVICE_DIR="/data/apps/dbus-aggregate-smartshunts"
-SERVICE_LINK="/service/dbus-aggregate-smartshunts"
-
-echo "=== Enabling dbus-aggregate-smartshunts service ==="
-
-# Remove old service link if it exists
-if [ -L "$SERVICE_LINK" ]; then
-    echo "Removing old service link..."
-    rm "$SERVICE_LINK"
+# Create rc.local if it doesn't exist
+if [ ! -f /data/rc.local ]; then
+    echo "#!/bin/bash" > /data/rc.local
+    chmod 755 /data/rc.local
 fi
 
-# Create new service link
-echo "Creating service link..."
-ln -s "$SERVICE_DIR/service" "$SERVICE_LINK"
+# Add enable script to rc.local (runs on every boot)
+RC_ENTRY="bash /data/apps/dbus-aggregate-smartshunts/enable.sh"
+grep -qxF "$RC_ENTRY" /data/rc.local || echo "$RC_ENTRY" >> /data/rc.local
 
-# Wait for service to start
-sleep 2
+# Remove old-style symlink-only entries from rc.local
+sed -i '/ln -sf \/data\/apps\/dbus-aggregate-smartshunts\/service \/service\/dbus-aggregate-smartshunts/d' /data/rc.local
 
-# Check service status
-svstat "$SERVICE_LINK"
+# Create symlink to service directory
+if [ -L /service/dbus-aggregate-smartshunts ]; then
+    rm /service/dbus-aggregate-smartshunts
+fi
+ln -s /data/apps/dbus-aggregate-smartshunts/service /service/dbus-aggregate-smartshunts
 
-echo ""
-echo "Service enabled!"
-echo ""
-echo "To check logs:"
-echo "  tail -f $SERVICE_DIR/service/log/current"
-echo ""
-echo "To restart:"
-echo "  $SERVICE_DIR/restart.sh"
-echo ""
-
+echo "dbus-aggregate-smartshunts enabled"
