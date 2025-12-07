@@ -141,7 +141,7 @@ DEVICE_NAME = config["DEFAULT"].get("DEVICE_NAME", "").strip()
 # Temperature thresholds are now managed via UI switches, not config file
 
 # Update Intervals
-UPDATE_INTERVAL_FIND_DEVICES = get_int_from_config("DEFAULT", "UPDATE_INTERVAL_FIND_DEVICES", 1)
+UPDATE_INTERVAL_FIND_DEVICES = get_int_from_config("DEFAULT", "UPDATE_INTERVAL_FIND_DEVICES", 10)  # Start at 10s, not 1s
 MAX_UPDATE_INTERVAL_FIND_DEVICES = get_int_from_config("DEFAULT", "MAX_UPDATE_INTERVAL_FIND_DEVICES", 1800)
 
 # Error Handling

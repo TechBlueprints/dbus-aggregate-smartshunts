@@ -884,7 +884,11 @@ class DbusAggregateSmartShunts:
         Note: Discovery controls whether NEW switches are created, not whether we find/aggregate.
         We always search for SmartShunts, but only create switches for new ones when discovery is enabled.
         """
-        logging.info(f"Searching for SmartShunts: Trial #{self._searchTrials}")
+        # Only log at INFO level during initial search or when explicitly looking for new devices
+        if not self._shunts:
+            logging.info(f"Searching for SmartShunts: Trial #{self._searchTrials}")
+        else:
+            logging.debug(f"Checking for SmartShunt changes (interval: {self._device_search_interval}s)")
         
         found_shunts = []
         
@@ -911,7 +915,11 @@ class DbusAggregateSmartShunts:
                             'name': custom_name or f"Shunt {device_instance}",
                             'product': product_name
                         })
-                        logging.info(f"|- Found: {custom_name} [{device_instance}] - {product_name}")
+                        # Only log at INFO level during initial discovery
+                        if not self._shunts:
+                            logging.info(f"|- Found: {custom_name} [{device_instance}] - {product_name}")
+                        else:
+                            logging.debug(f"|- Found: {custom_name} [{device_instance}] - {product_name}")
         
         except Exception as e:
             logging.error(f"Error searching for SmartShunts: {e}")
@@ -962,8 +970,8 @@ class DbusAggregateSmartShunts:
                 if self.config['LOG_PERIOD'] > 0:
                     GLib.timeout_add_seconds(self.config['LOG_PERIOD'], self._periodic_log)
             else:
-                # Devices haven't changed - check if stable for 30 seconds
-                if self._devices_stable_since and (tt.time() - self._devices_stable_since) >= 30:
+                # Devices haven't changed - check if stable for 15 seconds
+                if self._devices_stable_since and (tt.time() - self._devices_stable_since) >= 15:
                     # Apply exponential backoff
                     old_interval = self._device_search_interval
                     self._device_search_interval = min(
@@ -972,7 +980,7 @@ class DbusAggregateSmartShunts:
                     )
                     
                     if self._device_search_interval != old_interval:
-                        logging.info(f"Devices stable for 30s, increasing search interval: {old_interval}s -> {self._device_search_interval}s")
+                        logging.info(f"Devices stable, increasing search interval: {old_interval}s -> {self._device_search_interval}s")
                     
                     # Reset stability timer for next backoff cycle
                     self._devices_stable_since = tt.time()
