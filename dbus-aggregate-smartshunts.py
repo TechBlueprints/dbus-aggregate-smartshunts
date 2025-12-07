@@ -129,8 +129,9 @@ class DbusAggregateSmartShunts:
                                     gettextcallback=lambda a, x: "{:.0f}C".format(x) if x is not None else "")
         
         # Create capacity paths
-        self._dbusservice.add_path("/Soc", None, writeable=True,
-                                    gettextcallback=lambda a, x: "{:.1f}%".format(x) if x is not None else "0%")
+        # Initialize with 0 to avoid None showing as "0%" in text - will be updated immediately
+        self._dbusservice.add_path("/Soc", 0, writeable=True,
+                                    gettextcallback=lambda a, x: "{:.1f}%".format(x) if x is not None else "--")
         # Note: /Capacity and /InstalledCapacity are NOT included - these are BMS-specific paths
         # Physical SmartShunts don't expose these paths
         # For BMS functionality with these paths, use dbus-smartshunt-to-bms project
