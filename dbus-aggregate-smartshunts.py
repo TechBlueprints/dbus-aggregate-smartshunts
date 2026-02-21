@@ -29,18 +29,9 @@ from settingsdevice import SettingsDevice
 VERSION = "1.0.0"
 
 
-class SystemBus(dbus.bus.BusConnection):
-    def __new__(cls):
-        return dbus.bus.BusConnection.__new__(cls, dbus.bus.BusConnection.TYPE_SYSTEM)
-
-
-class SessionBus(dbus.bus.BusConnection):
-    def __new__(cls):
-        return dbus.bus.BusConnection.__new__(cls, dbus.bus.BusConnection.TYPE_SESSION)
-
-
 def get_bus():
-    return SessionBus() if "DBUS_SESSION_BUS_ADDRESS" in os.environ else SystemBus()
+    """Return the shared system bus connection (singleton provided by dbus-python)."""
+    return dbus.SessionBus() if "DBUS_SESSION_BUS_ADDRESS" in os.environ else dbus.SystemBus()
 
 
 class DbusAggregateSmartShunts:
