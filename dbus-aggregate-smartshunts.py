@@ -26,56 +26,32 @@ from vedbus import VeDbusService
 from dbusmonitor import DbusMonitor
 from settingsdevice import SettingsDevice
 
+from gate import (
+    AGGREGATE_THRESHOLDS,
+    DEBOUNCE_INTERVAL_MS,
+    HEARTBEAT_INTERVAL_S,
+    _is_substantial,
+)
+
 VERSION = "1.0.0"
 
 
 # ── Reactive-update gating (perf) ───────────────────────────────────────────
 #
-# The aggregator's ``_update()`` used to fire on every PropertiesChanged
-# from any monitored shunt — measured at ~28 calls/sec on a 4-shunt bank.
-# That floods the bus with ``ItemsChanged`` emits and forces every
-# downstream listener (gui-v2, vrmlogger, dbus-systemcalc, mqtt-rpc, ...)
-# to do receive-side work for changes too small to matter.
+# The constants AGGREGATE_THRESHOLDS / DEBOUNCE_INTERVAL_MS /
+# HEARTBEAT_INTERVAL_S and the ``_is_substantial`` helper live in
+# ``gate.py`` so tests can exercise them without pulling in dbus-python,
+# gi.repository, vedbus, etc.  The three-knob strategy is documented in
+# detail there.  Short version:
 #
-# The cure has three parts, stacked:
-#
-#   1. **Debounce.**  ``_on_value_changed`` schedules ``_do_pending_update``
-#      via ``GLib.timeout_add`` instead of ``GLib.idle_add`` so many rapid
-#      changes coalesce into one ``_update()`` call per second.
-#
-#   2. **Rounded comparison, precise emit.**  Inside ``_update()`` we
-#      compare the *rounded* new aggregate against the last value we
-#      published.  If no path's rounded version moved by ``threshold``,
-#      no D-Bus write happens at all.  When something does cross the
-#      threshold, we publish the *precise* (unrounded) values so
-#      downstream consumers still see full resolution.
-#
-#   3. **Periodic heartbeat.**  Even if nothing crosses a threshold, we
-#      force-publish every ``HEARTBEAT_INTERVAL_S`` so listeners can
-#      tell the aggregator is alive (think: VRM uptime sanity, GUI
-#      "data is fresh" indicators).
-#
-# Coarser thresholds = quieter bus, less responsive.  These values are
-# tuned for a 12 V house bank where natural noise is sub-50 mV / sub-100
-# mA but real events (load on/off, sun coming up) easily exceed.
-AGGREGATE_THRESHOLDS = {
-    "/Dc/0/Voltage":      0.1,    # V  — kills sub-0.1 V flicker
-    "/Dc/0/Current":      1.0,    # A  — fridge cycling at ~2 A still trips
-    "/Dc/0/Power":        10,     # W  — small loads still register
-    "/Dc/0/Temperature":  1.0,    # °C — battery temps drift slowly
-    "/Soc":               1.0,    # %
-    "/ConsumedAmphours":  0.5,    # Ah
-    "/TimeToGo":          120,    # s  — 2 min
-}
-
-# 1-second debounce on the reactive trigger.  At ~28 changes/sec from
-# the underlying shunts, this drops ``_update()`` invocations to ~1/sec.
-DEBOUNCE_INTERVAL_MS = 1000
-
-# Force a full write at least this often.  15 minutes keeps the
-# aggregate's ItemsChanged cadence visible to listeners that watch for
-# freshness without flooding the bus.
-HEARTBEAT_INTERVAL_S = 900
+#   1. Debounce ``_on_value_changed`` via GLib.timeout_add so many
+#      rapid shunt updates coalesce into one ``_update()`` per second.
+#   2. Compare new aggregates against last-published values; skip the
+#      whole D-Bus write block when nothing crosses its threshold.
+#      Emit *precise* values when we do write — rounding is for the
+#      comparison only.
+#   3. Force a full write every HEARTBEAT_INTERVAL_S regardless, so
+#      freshness watchers can tell the aggregator is alive.
 
 
 def get_bus():
@@ -1160,13 +1136,23 @@ class DbusAggregateSmartShunts:
     
     def _update(self):
         """Main update function - aggregate SmartShunt data and update D-Bus"""
-        
+
         # Prevent recursive updates
         if self._updating:
             return False
-        
+
         self._updating = True
-        
+
+        # Pre-compute the enabled-shunt list once.  Used by both the
+        # value-aggregation loop below and the VEDirect-counter loop
+        # further down, eliminating the per-iteration ``if service in
+        # self.shunt_switches`` dict probe + ``.get('enabled', True)``
+        # call that used to fire ~2 × N_shunts times per ``_update``.
+        enabled_shunts = [
+            s for s in self._shunts
+            if self.shunt_switches.get(s['service'], {}).get('enabled', True)
+        ]
+
         # Aggregate values
         total_voltage = 0
         voltage_readings = []  # Collect all voltages for smart algorithm
@@ -1207,15 +1193,9 @@ class DbusAggregateSmartShunts:
         temp_count = 0
         
         try:
-            for shunt in self._shunts:
+            for shunt in enabled_shunts:
                 service = shunt['service']
-                
-                # Skip if this shunt's switch is disabled
-                if service in self.shunt_switches:
-                    if not self.shunt_switches[service].get('enabled', True):
-                        logging.debug(f"Skipping disabled shunt: {service}")
-                        continue
-                
+
                 # Read values
                 voltage = self._dbusmon.get_value(service, "/Dc/0/Voltage")
                 current = self._dbusmon.get_value(service, "/Dc/0/Current")
@@ -1515,14 +1495,9 @@ class DbusAggregateSmartShunts:
         vedirect_text_parse = []
         vedirect_text_unfinished = []
         
-        for shunt in self._shunts:
+        for shunt in enabled_shunts:
             service = shunt['service']
-            
-            # Skip if this shunt's switch is disabled
-            if service in self.shunt_switches:
-                if not self.shunt_switches[service].get('enabled', True):
-                    continue
-            
+
             vedirect_hex_checksum.append(self._dbusmon.get_value(service, "/VEDirect/HexChecksumErrors") or 0)
             vedirect_hex_invalid_char.append(self._dbusmon.get_value(service, "/VEDirect/HexInvalidCharacterErrors") or 0)
             vedirect_hex_unfinished.append(self._dbusmon.get_value(service, "/VEDirect/HexUnfinishedErrors") or 0)
@@ -1561,15 +1536,9 @@ class DbusAggregateSmartShunts:
             "/ConsumedAmphours":  consumed_ah,
             "/TimeToGo":          time_to_go,
         }
-        substantial = False
-        for path, val in gated_new.items():
-            if val is None:
-                continue
-            last = self._last_substantial.get(path)
-            threshold = AGGREGATE_THRESHOLDS[path]
-            if last is None or abs(val - last) >= threshold:
-                substantial = True
-                break
+        substantial = _is_substantial(
+            gated_new, self._last_substantial, AGGREGATE_THRESHOLDS
+        )
 
         now = tt.monotonic()
         heartbeat_due = (now - self._last_emit_time) >= HEARTBEAT_INTERVAL_S
