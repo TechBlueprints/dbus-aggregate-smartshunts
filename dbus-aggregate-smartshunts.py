@@ -29,6 +29,55 @@ from settingsdevice import SettingsDevice
 VERSION = "1.0.0"
 
 
+# ── Reactive-update gating (perf) ───────────────────────────────────────────
+#
+# The aggregator's ``_update()`` used to fire on every PropertiesChanged
+# from any monitored shunt — measured at ~28 calls/sec on a 4-shunt bank.
+# That floods the bus with ``ItemsChanged`` emits and forces every
+# downstream listener (gui-v2, vrmlogger, dbus-systemcalc, mqtt-rpc, ...)
+# to do receive-side work for changes too small to matter.
+#
+# The cure has three parts, stacked:
+#
+#   1. **Debounce.**  ``_on_value_changed`` schedules ``_do_pending_update``
+#      via ``GLib.timeout_add`` instead of ``GLib.idle_add`` so many rapid
+#      changes coalesce into one ``_update()`` call per second.
+#
+#   2. **Rounded comparison, precise emit.**  Inside ``_update()`` we
+#      compare the *rounded* new aggregate against the last value we
+#      published.  If no path's rounded version moved by ``threshold``,
+#      no D-Bus write happens at all.  When something does cross the
+#      threshold, we publish the *precise* (unrounded) values so
+#      downstream consumers still see full resolution.
+#
+#   3. **Periodic heartbeat.**  Even if nothing crosses a threshold, we
+#      force-publish every ``HEARTBEAT_INTERVAL_S`` so listeners can
+#      tell the aggregator is alive (think: VRM uptime sanity, GUI
+#      "data is fresh" indicators).
+#
+# Coarser thresholds = quieter bus, less responsive.  These values are
+# tuned for a 12 V house bank where natural noise is sub-50 mV / sub-100
+# mA but real events (load on/off, sun coming up) easily exceed.
+AGGREGATE_THRESHOLDS = {
+    "/Dc/0/Voltage":      0.1,    # V  — kills sub-0.1 V flicker
+    "/Dc/0/Current":      1.0,    # A  — fridge cycling at ~2 A still trips
+    "/Dc/0/Power":        10,     # W  — small loads still register
+    "/Dc/0/Temperature":  1.0,    # °C — battery temps drift slowly
+    "/Soc":               1.0,    # %
+    "/ConsumedAmphours":  0.5,    # Ah
+    "/TimeToGo":          120,    # s  — 2 min
+}
+
+# 1-second debounce on the reactive trigger.  At ~28 changes/sec from
+# the underlying shunts, this drops ``_update()`` invocations to ~1/sec.
+DEBOUNCE_INTERVAL_MS = 1000
+
+# Force a full write at least this often.  15 minutes keeps the
+# aggregate's ItemsChanged cadence visible to listeners that watch for
+# freshness without flooding the bus.
+HEARTBEAT_INTERVAL_S = 900
+
+
 def get_bus():
     """Return the shared system bus connection (singleton provided by dbus-python)."""
     return dbus.SessionBus() if "DBUS_SESSION_BUS_ADDRESS" in os.environ else dbus.SystemBus()
@@ -45,7 +94,20 @@ class DbusAggregateSmartShunts:
         
         # Track if we're in the middle of an update to prevent recursion
         self._updating = False
-        
+
+        # Reactive-update gating state (see AGGREGATE_THRESHOLDS,
+        # DEBOUNCE_INTERVAL_MS, HEARTBEAT_INTERVAL_S at module top).
+        #
+        # _update_scheduled : True between a debounce arm and its fire,
+        #                     prevents stacking idle/timeout callbacks.
+        # _last_substantial : the precise value we last published for
+        #                     each path with a threshold; the basis for
+        #                     "did the rounded version change?".
+        # _last_emit_time   : monotonic; for the 900 s heartbeat.
+        self._update_scheduled = False
+        self._last_substantial = {}
+        self._last_emit_time = 0.0
+
         # Exponential backoff for device discovery
         self._device_search_interval = config['UPDATE_INTERVAL_FIND_DEVICES']  # Current interval
         self._initial_search_interval = config['UPDATE_INTERVAL_FIND_DEVICES']  # Store initial
@@ -565,19 +627,44 @@ class DbusAggregateSmartShunts:
     def _on_value_changed(self, dbusServiceName, dbusPath, options, changes, deviceInstance):
         """
         Called whenever any monitored D-Bus value changes.
-        This enables reactive updates instead of polling.
+
+        Schedules ``_update()`` via a debounce timer so a burst of
+        shunt updates (e.g. 4 shunts × 7 watched paths firing within a
+        few milliseconds) collapses into one aggregation pass per
+        ``DEBOUNCE_INTERVAL_MS``.  Without this, the audit measured
+        ``_update()`` running ~28×/sec on this cerbo.
         """
         # Only trigger updates for our tracked SmartShunts, not our own service
         if "aggregate_shunts" in dbusServiceName:
             return
-        
-        # Only update for relevant paths (voltage, current, power, SoC, etc.)
-        if dbusPath in ["/Dc/0/Voltage", "/Dc/0/Current", "/Dc/0/Power", "/Soc", 
-                        "/ConsumedAmphours", "/TimeToGo", "/Dc/0/Temperature"]:
-            # Schedule an update if we have shunts configured
-            if self._shunts and not self._updating:
-                # Use GLib.idle_add to avoid blocking the D-Bus callback
-                GLib.idle_add(self._update)
+
+        if dbusPath not in (
+            "/Dc/0/Voltage", "/Dc/0/Current", "/Dc/0/Power", "/Soc",
+            "/ConsumedAmphours", "/TimeToGo", "/Dc/0/Temperature",
+        ):
+            return
+        if not self._shunts:
+            return
+        if self._update_scheduled:
+            return
+
+        # Arm the debounce; ``_do_pending_update`` will clear the flag
+        # and fire ``_update()`` exactly once.
+        self._update_scheduled = True
+        GLib.timeout_add(DEBOUNCE_INTERVAL_MS, self._do_pending_update)
+
+    def _do_pending_update(self):
+        """Debounced wrapper around ``_update()``.
+
+        ``GLib.timeout_add`` requires a return value; ``False`` makes
+        the timer one-shot.  We always return ``False`` here.
+        """
+        self._update_scheduled = False
+        try:
+            self._update()
+        except Exception:
+            logging.exception("Error in debounced _update")
+        return False
     
     def _on_temp_low_state_changed(self, path: str, value):
         """Handle low temp threshold on/off state - reset to default when turned off"""
@@ -1449,7 +1536,58 @@ class DbusAggregateSmartShunts:
         agg_vedirect_text_checksum = sum(vedirect_text_checksum)
         agg_vedirect_text_parse = sum(vedirect_text_parse)
         agg_vedirect_text_unfinished = sum(vedirect_text_unfinished)
-        
+
+        # ── Rounding-based "should we emit?" decision ──────────────────
+        #
+        # Compare each gated path's new value against the value we last
+        # published.  If any threshold-bearing path has moved by at
+        # least its threshold, this update is "substantial" and we
+        # publish *precise* (unrounded) values for everything.
+        #
+        # If nothing crosses a threshold AND we last emitted within the
+        # heartbeat window, the whole D-Bus write block is skipped —
+        # vedbus emits no ItemsChanged for this cycle, and every
+        # downstream listener saves the corresponding receive work.
+        #
+        # Heartbeat (HEARTBEAT_INTERVAL_S) guarantees an emit even
+        # during a long quiet period so freshness watchers don't
+        # think we've died.
+        gated_new = {
+            "/Dc/0/Voltage":      reported_voltage,
+            "/Dc/0/Current":      total_current,
+            "/Dc/0/Power":        total_power,
+            "/Dc/0/Temperature":  reported_temperature,
+            "/Soc":               soc,
+            "/ConsumedAmphours":  consumed_ah,
+            "/TimeToGo":          time_to_go,
+        }
+        substantial = False
+        for path, val in gated_new.items():
+            if val is None:
+                continue
+            last = self._last_substantial.get(path)
+            threshold = AGGREGATE_THRESHOLDS[path]
+            if last is None or abs(val - last) >= threshold:
+                substantial = True
+                break
+
+        now = tt.monotonic()
+        heartbeat_due = (now - self._last_emit_time) >= HEARTBEAT_INTERVAL_S
+
+        if not substantial and not heartbeat_due:
+            # Nothing meaningful changed and we emitted recently —
+            # skip the D-Bus write entirely.  vedbus emits no IC.
+            self._updating = False
+            return False  # one-shot timer return value
+
+        # We're going to emit.  Snapshot the new substantial values
+        # before the write so concurrent _update calls compare against
+        # what we're actually about to publish.
+        for path, val in gated_new.items():
+            if val is not None:
+                self._last_substantial[path] = val
+        self._last_emit_time = now
+
         # Update D-Bus
         with self._dbusservice as bus:
             bus["/Dc/0/Voltage"] = reported_voltage
