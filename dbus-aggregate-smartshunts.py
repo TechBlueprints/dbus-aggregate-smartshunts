@@ -28,7 +28,6 @@ from settingsdevice import SettingsDevice
 
 from gate import (
     AGGREGATE_THRESHOLDS,
-    DEBOUNCE_INTERVAL_MS,
     HEARTBEAT_INTERVAL_S,
     _is_substantial,
 )
@@ -38,18 +37,23 @@ VERSION = "1.0.0"
 
 # ── Reactive-update gating (perf) ───────────────────────────────────────────
 #
-# The constants AGGREGATE_THRESHOLDS / DEBOUNCE_INTERVAL_MS /
-# HEARTBEAT_INTERVAL_S and the ``_is_substantial`` helper live in
-# ``gate.py`` so tests can exercise them without pulling in dbus-python,
-# gi.repository, vedbus, etc.  The three-knob strategy is documented in
-# detail there.  Short version:
+# The constants AGGREGATE_THRESHOLDS / HEARTBEAT_INTERVAL_S and the
+# ``_is_substantial`` helper live in ``gate.py`` so tests can exercise
+# them without pulling in dbus-python, gi.repository, vedbus, etc.  The
+# strategy is documented in detail there.  Short version:
 #
-#   1. Debounce ``_on_value_changed`` via GLib.timeout_add so many
-#      rapid shunt updates coalesce into one ``_update()`` per second.
+#   1. ``_on_value_changed`` schedules ``_update()`` via GLib.idle_add on
+#      every shunt change — no time debounce.  The in-flight
+#      ``_updating`` guard coalesces bursts (changes arriving while an
+#      update runs fold into the next single pass) without adding
+#      latency, so the aggregate reacts as fast as the shunts do.  This
+#      matters: the reported voltage feeds a downstream control/alarm
+#      loop, and a time debounce stretched brief transients into
+#      sustained over-voltage readings.
 #   2. Compare new aggregates against last-published values; skip the
-#      whole D-Bus write block when nothing crosses its threshold.
-#      Emit *precise* values when we do write — rounding is for the
-#      comparison only.
+#      whole D-Bus write block when no path moves past its threshold.
+#      The threshold comparison is the sole emit rate-limiter, and we
+#      still emit *precise* (unrounded) values when we do write.
 #   3. Force a full write every HEARTBEAT_INTERVAL_S regardless, so
 #      freshness watchers can tell the aggregator is alive.
 
@@ -72,15 +76,12 @@ class DbusAggregateSmartShunts:
         self._updating = False
 
         # Reactive-update gating state (see AGGREGATE_THRESHOLDS,
-        # DEBOUNCE_INTERVAL_MS, HEARTBEAT_INTERVAL_S at module top).
+        # HEARTBEAT_INTERVAL_S at module top).
         #
-        # _update_scheduled : True between a debounce arm and its fire,
-        #                     prevents stacking idle/timeout callbacks.
         # _last_substantial : the precise value we last published for
         #                     each path with a threshold; the basis for
-        #                     "did the rounded version change?".
+        #                     the threshold-delta comparison in the gate.
         # _last_emit_time   : monotonic; for the 900 s heartbeat.
-        self._update_scheduled = False
         self._last_substantial = {}
         self._last_emit_time = 0.0
 
@@ -604,11 +605,17 @@ class DbusAggregateSmartShunts:
         """
         Called whenever any monitored D-Bus value changes.
 
-        Schedules ``_update()`` via a debounce timer so a burst of
-        shunt updates (e.g. 4 shunts × 7 watched paths firing within a
-        few milliseconds) collapses into one aggregation pass per
-        ``DEBOUNCE_INTERVAL_MS``.  Without this, the audit measured
-        ``_update()`` running ~28×/sec on this cerbo.
+        Schedules ``_update()`` reactively via ``GLib.idle_add`` — no
+        time debounce.  The aggregate must react as fast as the shunts
+        do, because its reported voltage feeds a downstream control/alarm
+        loop; a debounce stretched brief transients (e.g. a load dump
+        when the fridge cuts out) into sustained over-voltage readings.
+
+        Burst coalescing is handled by the ``_updating`` guard: while one
+        ``_update()`` is in flight, further changes don't schedule
+        another, so a flurry of per-shunt PropertiesChanged signals folds
+        into the next single pass.  Steady-state bus quiet is the gate's
+        job (the threshold check inside ``_update``), not this scheduler.
         """
         # Only trigger updates for our tracked SmartShunts, not our own service
         if "aggregate_shunts" in dbusServiceName:
@@ -621,27 +628,12 @@ class DbusAggregateSmartShunts:
             return
         if not self._shunts:
             return
-        if self._update_scheduled:
+        if self._updating:
             return
 
-        # Arm the debounce; ``_do_pending_update`` will clear the flag
-        # and fire ``_update()`` exactly once.
-        self._update_scheduled = True
-        GLib.timeout_add(DEBOUNCE_INTERVAL_MS, self._do_pending_update)
+        # ``_update`` returns False, so this fires exactly once per schedule.
+        GLib.idle_add(self._update)
 
-    def _do_pending_update(self):
-        """Debounced wrapper around ``_update()``.
-
-        ``GLib.timeout_add`` requires a return value; ``False`` makes
-        the timer one-shot.  We always return ``False`` here.
-        """
-        self._update_scheduled = False
-        try:
-            self._update()
-        except Exception:
-            logging.exception("Error in debounced _update")
-        return False
-    
     def _on_temp_low_state_changed(self, path: str, value):
         """Handle low temp threshold on/off state - reset to default when turned off"""
         new_state = bool(int(value) if isinstance(value, str) else value)
@@ -1547,7 +1539,7 @@ class DbusAggregateSmartShunts:
             # Nothing meaningful changed and we emitted recently —
             # skip the D-Bus write entirely.  vedbus emits no IC.
             self._updating = False
-            return False  # one-shot timer return value
+            return False  # one-shot idle_add return value
 
         # We're going to emit.  Snapshot the new substantial values
         # before the write so concurrent _update calls compare against

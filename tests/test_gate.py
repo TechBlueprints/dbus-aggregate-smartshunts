@@ -113,12 +113,15 @@ class TestProductionThresholds:
     flip behaviour."""
 
     def test_house_battery_idle_no_emit(self):
-        # Cerbo's actual measurement: voltage flickers 13.78 ↔ 13.82 (0.04 V),
-        # current 0 ↔ 0.5 A (0.5 A), power 0 ↔ 5 W.  None should be substantial.
+        # Small idle flicker below every threshold: voltage 13.78 ↔ 13.82
+        # (0.04 V < 0.05), current 0 ↔ 0.3 A (< 0.5), power 0 ↔ 3 W (< 5).
+        # Note: the current/power gates now sit *on* the idle-flicker floor
+        # (0.5 A / 5 W), so a full-swing flicker would emit by design —
+        # see test_idle_full_flicker_emits.  This case stays gated.
         new = {
             "/Dc/0/Voltage": 13.82,
-            "/Dc/0/Current": 0.5,
-            "/Dc/0/Power":   5,
+            "/Dc/0/Current": 0.3,
+            "/Dc/0/Power":   3,
             "/Soc":          99.5,
         }
         last = {
@@ -128,6 +131,13 @@ class TestProductionThresholds:
             "/Soc":          99.4,
         }
         assert gate._is_substantial(new, last, gate.AGGREGATE_THRESHOLDS) is False
+
+    def test_idle_full_flicker_emits(self):
+        # Accepted tradeoff of the tight current gate: a 0.5 A idle swing
+        # is exactly the threshold (>=) so it emits.  Documented, not a bug.
+        new = {"/Dc/0/Current": 0.5}
+        last = {"/Dc/0/Current": 0.0}
+        assert gate._is_substantial(new, last, gate.AGGREGATE_THRESHOLDS) is True
 
     def test_fridge_kicks_on(self):
         # 200 W load comes on — power moves 0 → 200, current 0 → 16.  Definitely substantial.
@@ -158,11 +168,36 @@ class TestThresholdCoverage:
         assert set(gate.AGGREGATE_THRESHOLDS.keys()) == expected
 
 
-class TestDebounceAndHeartbeatConstants:
-    """Lock in the integer values so accidental edits trip a test."""
-
-    def test_debounce_is_one_second(self):
-        assert gate.DEBOUNCE_INTERVAL_MS == 1000
+class TestHeartbeatConstant:
+    """Lock in the integer value so an accidental edit trips a test."""
 
     def test_heartbeat_is_fifteen_minutes(self):
         assert gate.HEARTBEAT_INTERVAL_S == 900
+
+    def test_no_debounce_constant(self):
+        # The time debounce was removed; the value-based gate is the
+        # sole rate-limiter.  Guard against it creeping back in.
+        assert not hasattr(gate, "DEBOUNCE_INTERVAL_MS")
+
+
+class TestVoltageResponsiveness:
+    """Voltage feeds a downstream control/alarm loop, so the gate must
+    react to small voltage moves that the old 0.2 V threshold swallowed."""
+
+    def test_voltage_threshold_is_tight(self):
+        assert gate.AGGREGATE_THRESHOLDS["/Dc/0/Voltage"] == 0.05
+
+    def test_small_voltage_rise_is_substantial(self):
+        # A 0.1 V rise toward an over-voltage limit must emit so the
+        # control loop can react — the old 0.2 V gate would have hidden it.
+        assert gate._is_substantial(
+            {"/Dc/0/Voltage": 14.95}, {"/Dc/0/Voltage": 14.85},
+            gate.AGGREGATE_THRESHOLDS,
+        ) is True
+
+    def test_sub_noise_voltage_flicker_still_gated(self):
+        # 0.04 V idle flicker stays below the 0.05 V floor → no emit.
+        assert gate._is_substantial(
+            {"/Dc/0/Voltage": 13.82}, {"/Dc/0/Voltage": 13.78},
+            gate.AGGREGATE_THRESHOLDS,
+        ) is False

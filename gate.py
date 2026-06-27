@@ -13,22 +13,28 @@ this module.
 
 # ── Reactive-update gating (perf) ────────────────────────────────────────
 #
-# Coarser thresholds = quieter bus, less responsive.  Values tuned for a
-# 12 V house bank where natural noise is sub-50 mV / sub-100 mA but real
-# events (load on/off, sun coming up) easily exceed.
+# The value-based gate is the *sole* rate-limiter: there is no time
+# debounce.  ``_update()`` runs on every shunt change (coalesced only by
+# the in-flight ``_updating`` guard), and this threshold check decides
+# whether the result is worth writing to D-Bus.  Coarser threshold =
+# quieter bus, less responsive; tighter = faster reaction.  Values tuned
+# for a 12 V house bank where natural noise is sub-50 mV / sub-100 mA but
+# real events (load on/off, sun coming up) easily exceed.
 AGGREGATE_THRESHOLDS = {
-    "/Dc/0/Voltage":      0.2,    # V  — half a percent at 12 V; above noise
-    "/Dc/0/Current":      2.0,    # A  — fridge inrush still trips
-    "/Dc/0/Power":        25,     # W  — small loads still register
+    "/Dc/0/Voltage":      0.05,   # V  — tight: voltage feeds a downstream
+                                  #      control/alarm loop, so report rises
+                                  #      and recoveries fast (≈ sensor noise
+                                  #      floor; idle flicker is sub-50 mV).
+    "/Dc/0/Current":      0.5,    # A  — tight: report small draw changes
+                                  #      fast.  Sits on the idle-flicker
+                                  #      floor, so a quiet bank may emit
+                                  #      occasionally (accepted tradeoff).
+    "/Dc/0/Power":        5,      # W  — matches the tighter current gate
     "/Dc/0/Temperature":  1.0,    # °C — battery temps drift slowly
     "/Soc":               1.0,    # %
     "/ConsumedAmphours":  0.5,    # Ah
     "/TimeToGo":          120,    # s  — 2 min
 }
-
-# 1-second debounce on the reactive trigger.  Collapses bursts of
-# per-shunt PropertiesChanged signals into one aggregation pass.
-DEBOUNCE_INTERVAL_MS = 1000
 
 # Force a full write at least this often even when nothing crosses a
 # threshold, so freshness watchers (VRM uptime, GUI "data is fresh"
