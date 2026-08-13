@@ -145,6 +145,11 @@ class DbusAggregateSmartShunts:
         self._dbusservice.add_path("/HardwareVersion", [],
             gettextcallback=lambda a, x: "")
         self._dbusservice.add_path("/Connected", 1)
+        # Measurement-graph declaration: this service re-publishes values
+        # rolled up from the discovered SmartShunt services; summing
+        # consumers must not count it alongside its constituents.
+        self._dbusservice.add_path("/Measurement/Kind", "derived")
+        self._dbusservice.add_path("/Measurement/TracksServices", "", writeable=True)
         self._dbusservice.add_path("/Serial", "AGGREGATE01")
         self._dbusservice.add_path("/CustomName", custom_name)
         
@@ -984,6 +989,7 @@ class DbusAggregateSmartShunts:
             # Check if this is initial discovery or device count changed
             if not self._shunts or len(found_shunts) != self._last_device_count:
                 self._shunts = found_shunts
+                self._dbusservice["/Measurement/TracksServices"] = ",".join(sorted(s["service"] for s in found_shunts))
                 self._last_device_count = len(found_shunts)
                 logging.info(f"✓ Found {len(found_shunts)} SmartShunt(s) to aggregate")
                 
